@@ -6,12 +6,16 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// Health check
+/**
+ * Health check
+ */
 app.get("/", (req, res) => {
   res.send("Exotel Voice Agent Server is running");
 });
 
-// TEMP: inbound/outbound call answer (Gujarati greeting)
+/**
+ * Call answer webhook (Exotel hits this after user picks up)
+ */
 app.post("/answer", (req, res) => {
   res.set("Content-Type", "text/xml");
   res.send(`
@@ -23,34 +27,52 @@ app.post("/answer", (req, res) => {
   `);
 });
 
+/**
+ * Trigger outbound call
+ */
 app.post("/call", async (req, res) => {
-  const { to } = req.body;
+  try {
+    const { to } = req.body;
 
-  const url = `https://api.exotel.com/v1/Accounts/${process.env.EXOTEL_SID}/Calls/connect.json`;
+    if (!to) {
+      return res.status(400).json({ error: "Missing 'to' number" });
+    }
 
-  const body = new URLSearchParams({
-    From: process.env.EXOTEL_EXOPHONE,
-    To: to,
-    CallerId: process.env.EXOTEL_EXOPHONE,
-    Url: "https://exotel-voice-agent.onrender.com/answer",
-    CallType: "trans"
-  });
+    const exotelAccountSid = process.env.EXOTEL_ACCOUNT_SID;
+    const exotelApiKey = process.env.EXOTEL_API_KEY;
+    const exotelApiToken = process.env.EXOTEL_API_TOKEN;
+    const exotelExoPhone = process.env.EXOTEL_EXOPHONE;
 
-  const auth = Buffer.from(
-    `${process.env.EXOTEL_SID}:${process.env.EXOTEL_TOKEN}`
-  ).toString("base64");
+    const url = `https://api.exotel.com/v1/Accounts/${exotelAccountSid}/Calls/connect.json`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body
-  });
+    const body = new URLSearchParams({
+      From: exotelExoPhone,
+      To: to,
+      CallerId: exotelExoPhone,
+      Url: "https://exotel-voice-agent.onrender.com/answer"
+    });
 
-  const data = await response.json();
-  res.json(data);
+    // ✅ CORRECT EXOTEL AUTH (API KEY : API TOKEN)
+    const auth = Buffer.from(
+      `${exotelApiKey}:${exotelApiToken}`
+    ).toString("base64");
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body
+    });
+
+    const text = await response.text(); // Exotel may not return JSON
+    res.send(text);
+
+  } catch (err) {
+    console.error("Call error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
