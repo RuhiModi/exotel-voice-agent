@@ -36,6 +36,29 @@ app.post("/answer", (req, res) => {
 });
 
 /**
+ * process response
+ */
+app.post("/process-response", (req, res) => {
+  res.set("Content-Type", "text/xml");
+
+  // In later steps, we’ll use STT here
+  // For now, assume "pending" flow
+
+  res.send(`
+    <Response>
+      <Say language="gu-IN">
+        ઠીક છે. જો તમને વધુ મદદ જોઈએ તો હું માનવ એજન્ટને જોડું છું.
+      </Say>
+
+      <Dial>
+        <Number>917874187762</Number>
+      </Dial>
+    </Response>
+  `);
+});
+
+
+/**
  * Trigger outbound call
  */
 app.post("/call", async (req, res) => {
