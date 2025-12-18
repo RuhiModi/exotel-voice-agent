@@ -18,11 +18,19 @@ app.get("/", (req, res) => {
  */
 app.post("/answer", (req, res) => {
   res.set("Content-Type", "text/xml");
+
   res.send(`
     <Response>
       <Say language="gu-IN">
-        નમસ્તે! હું તમારી મદદ માટે કોલ કરી રહ્યો છું.
+        નમસ્તે! શું તમારું કામ પૂરું થઈ ગયું છે?
       </Say>
+
+      <Record
+        action="/process-response"
+        method="POST"
+        maxLength="5"
+        playBeep="true"
+      />
     </Response>
   `);
 });
