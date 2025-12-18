@@ -47,12 +47,51 @@ function mockSpeechToText() {
 }
 
 /**
+ * Real STT Function
+ */
+import speech from "@google-cloud/speech";
+
+const speechClient = new speech.SpeechClient({
+  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
+});
+
+async function speechToTextFromUrl(audioUrl) {
+  const request = {
+    audio: {
+      uri: audioUrl,
+    },
+    config: {
+      encoding: "LINEAR16",
+      sampleRateHertz: 8000,
+      languageCode: "gu-IN",
+      alternativeLanguageCodes: ["hi-IN", "en-IN"],
+      enableAutomaticPunctuation: true,
+    },
+  };
+
+  const [response] = await speechClient.recognize(request);
+
+  const result = response.results?.[0];
+  if (!result) {
+    return { text: "", language: "gu-IN" };
+  }
+
+  return {
+    text: result.alternatives[0].transcript,
+    language: result.languageCode || "gu-IN",
+  };
+}
+
+/**
  * process response
  */
-app.post("/process-response", (req, res) => {
+app.post("/process-response", async (req, res) => {
   res.set("Content-Type", "text/xml");
 
-  const sttResult = mockSpeechToText();
+  const recordingUrl = req.body.RecordingUrl;
+  const sttResult = recordingUrl
+  ? await speechToTextFromUrl(recordingUrl)
+  : { text: "", language: "gu-IN" };
   const userText = sttResult.text.toLowerCase();
   const language = sttResult.language;
 
