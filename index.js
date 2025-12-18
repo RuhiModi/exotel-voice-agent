@@ -86,7 +86,7 @@ const sheets = google.sheets({
 });
 
 // ⬇️ ADD YOUR SHEET ID HERE
-const SPREADSHEET_ID = "PASTE_YOUR_SHEET_ID_HERE";
+const SPREADSHEET_ID = "https://docs.google.com/spreadsheets/d/12cCD2SVd3XnGdQg352NqcvCsWIq2UUDYLNpJryshVTg/edit?gid=0#gid=0";
 
 
 /* ======================
