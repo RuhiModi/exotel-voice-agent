@@ -36,27 +36,59 @@ app.post("/answer", (req, res) => {
 });
 
 /**
+ * Mock STT Function
+ */
+function mockSpeechToText() {
+  // Temporary placeholder
+  return {
+    text: "pending",
+    language: "gu-IN"
+  };
+}
+
+/**
  * process response
  */
 app.post("/process-response", (req, res) => {
   res.set("Content-Type", "text/xml");
 
-  // In later steps, we’ll use STT here
-  // For now, assume "pending" flow
+  const sttResult = mockSpeechToText();
+  const userText = sttResult.text.toLowerCase();
+  const language = sttResult.language;
 
-  res.send(`
-    <Response>
-      <Say language="gu-IN">
-        ઠીક છે. જો તમને વધુ મદદ જોઈએ તો હું માનવ એજન્ટને જોડું છું.
-      </Say>
+  let replyText = "";
+  let shouldTransfer = false;
 
-      <Dial>
-        <Number>917874187762</Number>
-      </Dial>
-    </Response>
-  `);
+  if (userText.includes("done") || userText.includes("હા")) {
+    replyText = "સરસ! તમારું કામ પૂરું થઈ ગયું છે. આભાર.";
+  } else if (userText.includes("pending") || userText.includes("નહીં")) {
+    replyText = "સમજાયું. હું તમને માનવ એજન્ટ સાથે જોડું છું.";
+    shouldTransfer = true;
+  } else {
+    replyText = "માફ કરશો, ફરી એકવાર કહી શકો?";
+  }
+
+  if (shouldTransfer) {
+    res.send(`
+      <Response>
+        <Say language="${language}">
+          ${replyText}
+        </Say>
+        <Dial>
+          <Number>917874187762</Number>
+        </Dial>
+      </Response>
+    `);
+  } else {
+    res.send(`
+      <Response>
+        <Say language="${language}">
+          ${replyText}
+        </Say>
+      </Response>
+    `);
+  }
 });
-
 
 /**
  * Trigger outbound call
