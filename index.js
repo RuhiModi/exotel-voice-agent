@@ -2,6 +2,8 @@ import fetch from "node-fetch";
 import express from "express";
 import bodyParser from "body-parser";
 import speech from "@google-cloud/speech";
+import { google } from "googleapis";
+
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -71,6 +73,23 @@ async function speechToTextFromUrl(audioUrl) {
 }
 
 /* ======================
+   GOOGLE SHEETS CONFIG
+====================== */
+const sheetsAuth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+
+const sheets = google.sheets({
+  version: "v4",
+  auth: sheetsAuth,
+});
+
+// ⬇️ ADD YOUR SHEET ID HERE
+const SPREADSHEET_ID = "PASTE_YOUR_SHEET_ID_HERE";
+
+
+/* ======================
    GROQ AI BRAIN
 ====================== */
 async function askGroq({ text, language }) {
@@ -118,6 +137,33 @@ Respond ONLY in JSON:
 }
 
 /* ======================
+   Logging Function
+====================== */
+async function logCallToSheet({
+  language,
+  userText,
+  status,
+  duration,
+}) {
+  const timestamp = new Date().toLocaleString("en-IN");
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "A:E",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        timestamp,
+        language,
+        userText,
+        status,
+        duration,
+      ]],
+    },
+  });
+}
+
+/* ======================
    PROCESS USER RESPONSE
 ====================== */
 app.post("/process-response", async (req, res) => {
@@ -133,6 +179,13 @@ app.post("/process-response", async (req, res) => {
 
   const reply = aiResult.reply;
   const status = aiResult.status;
+
+   await logCallToSheet({
+  language,
+  userText: text,
+  status,
+  duration: 0 // placeholder for now
+});
 
   if (status === "handoff") {
     res.send(`
@@ -199,4 +252,17 @@ app.post("/call", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
+});
+
+/* ======================
+   Safe Test
+====================== */
+app.get("/test-log", async (req, res) => {
+  await logCallToSheet({
+    language: "Gujarati",
+    userText: "ટેસ્ટ એન્ટ્રી",
+    status: "Test",
+    duration: 5,
+  });
+  res.send("Test log added");
 });
