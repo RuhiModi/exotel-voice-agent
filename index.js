@@ -253,16 +253,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
-
-/* ======================
-   Safe Test
-====================== */
-app.get("/test-log", async (req, res) => {
-  await logCallToSheet({
-    language: "Gujarati",
-    userText: "ટેસ્ટ એન્ટ્રી",
-    status: "Test",
-    duration: 5,
-  });
-  res.send("Test log added");
-});
