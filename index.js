@@ -1,9 +1,10 @@
 import express from "express";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
 import speech from "@google-cloud/speech";
 
 const app = express();
+
+// Exotel sends form-urlencoded data
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
@@ -11,11 +12,11 @@ app.use(bodyParser.json());
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("Exotel Inbound Voice Agent is running");
+  res.send("✅ Exotel Inbound Voice Agent is running");
 });
 
 /* ======================
-   GOOGLE STT
+   GOOGLE STT CLIENT
 ====================== */
 const speechClient = new speech.SpeechClient({
   credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
@@ -36,63 +37,79 @@ async function speechToTextFromUrl(audioUrl) {
   };
 
   const [response] = await speechClient.recognize(request);
-  return response.results?.[0]?.alternatives?.[0]?.transcript || "";
+
+  return (
+    response.results?.[0]?.alternatives?.[0]?.transcript || ""
+  );
 }
 
 /* ======================
-   SIMPLE AI (NO GROQ CONFUSION)
+   SIMPLE AI LOGIC
 ====================== */
 function getReply(userText) {
   if (!userText) {
-    return "કૃપા કરીને ફરીથી બોલો.";
+    return "મને તમારો અવાજ સ્પષ્ટ સંભળાયો નથી. કૃપા કરીને ફરી પ્રયાસ કરો.";
   }
 
-  if (userText.includes("માનવ") || userText.includes("human")) {
-    return "હું તમને માનવ એજન્ટ સાથે જોડું છું.";
+  if (
+    userText.includes("માનવ") ||
+    userText.includes("human")
+  ) {
+    return "ડેમો મોડમાં માનવ એજન્ટ ઉપલબ્ધ નથી.";
   }
 
-  return `તમારો જવાબ મળ્યો: ${userText}. આભાર.`;
+  return `તમારો પ્રશ્ન હતો: ${userText}. આભાર.`;
 }
 
 /* ======================
    ANSWER INCOMING CALL
 ====================== */
 app.post("/answer", (req, res) => {
+  console.log("📞 Incoming call received");
+
   res.set("Content-Type", "text/xml");
 
-  res.send(`
-    <?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-      <Say language="gu-IN">
-        નમસ્તે, આ એક ડેમો AI વોઇસ એજન્ટ છે.
-        કૃપા કરીને તમારું પ્રશ્ન બોલો.
-      </Say>
-      <Record
-        action="/process"
-        method="POST"
-        maxLength="6"
-        playBeep="true"
-      />
-    </Response>
-  `);
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="gu-IN">
+    નમસ્તે. આ એક ડેમો AI વોઇસ એજન્ટ છે.
+    કૃપા કરીને બીપ પછી તમારો પ્રશ્ન બોલો.
+  </Say>
+
+  <Record
+    action="https://exotel-voice-agent.onrender.com/process"
+    method="POST"
+    maxLength="6"
+    playBeep="true"
+  />
+</Response>`);
 });
 
 /* ======================
-   PROCESS USER SPEECH
+   PROCESS RECORDED SPEECH
 ====================== */
 app.post("/process", async (req, res) => {
+  console.log("🎙️ PROCESS HIT");
+  console.log("BODY:", req.body);
+
   res.set("Content-Type", "text/xml");
 
   const recordingUrl = req.body.RecordingUrl;
-  const userText = await speechToTextFromUrl(recordingUrl);
+
+  let userText = "";
+  try {
+    userText = await speechToTextFromUrl(recordingUrl);
+  } catch (err) {
+    console.error("STT ERROR:", err);
+  }
+
   const reply = getReply(userText);
 
-  res.send(`
-    <Response>
-      <Say language="gu-IN">${reply}</Say>
-      <Hangup/>
-    </Response>
-  `);
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="gu-IN">${reply}</Say>
+  <Hangup/>
+</Response>`);
 });
 
 /* ======================
@@ -100,5 +117,5 @@ app.post("/process", async (req, res) => {
 ====================== */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("Inbound Voice Agent running on port", PORT);
+  console.log("🚀 Inbound Voice Agent running on port", PORT);
 });
