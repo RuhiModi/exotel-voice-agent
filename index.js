@@ -116,26 +116,13 @@ Reply ONLY in JSON:
    ANSWER CALL (OPENING)
 ====================== */
 app.post("/answer", (req, res) => {
-  const callSid = req.body.CallSid;
-
-  callSessions.set(callSid, {
-    stage: "name_collect",
-    name: "",
-  });
-
   res.set("Content-Type", "text/xml");
   res.send(`
+    <?xml version="1.0" encoding="UTF-8"?>
     <Response>
-      <Say language="gu-IN">
-        નમસ્તે,
-        હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
-
-        આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન
-        આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ કરવી.
-
-        શું હું આપનો થોડો સમય લઈ શકું?
+      <Say voice="female">
+        નમસ્તે, આ એક ટેસ્ટ કોલ છે. કૃપા કરીને લાઇન પર રહો.
       </Say>
-      <Record action="/process-response" method="POST" maxLength="5" playBeep="true"/>
     </Response>
   `);
 });
