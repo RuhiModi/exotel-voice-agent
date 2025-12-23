@@ -1,39 +1,31 @@
-import fetch from "node-fetch";
 import express from "express";
 import bodyParser from "body-parser";
+import fetch from "node-fetch";
 import speech from "@google-cloud/speech";
-import { google } from "googleapis";
 
-
+/* ======================
+   APP SETUP
+====================== */
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+
+/* ======================
+   IN-MEMORY CALL SESSIONS
+====================== */
+const callSessions = new Map();
+/*
+callSessions.get(CallSid) = {
+  stage: "name_collect" | "name_confirm" | "work_status",
+  name: ""
+}
+*/
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
   res.send("Exotel Voice Agent Server is running");
-});
-
-/* ======================
-   ANSWER CALL (GREETING)
-====================== */
-app.post("/answer", (req, res) => {
-  res.set("Content-Type", "text/xml");
-  res.send(`
-    <Response>
-      <Say language="gu-IN">
-        નમસ્તે! શું તમારું કામ પૂરું થઈ ગયું છે?
-      </Say>
-      <Record
-        action="/process-response"
-        method="POST"
-        maxLength="5"
-        playBeep="true"
-      />
-    </Response>
-  `);
 });
 
 /* ======================
@@ -44,9 +36,7 @@ const speechClient = new speech.SpeechClient({
 });
 
 async function speechToTextFromUrl(audioUrl) {
-  if (!audioUrl) {
-    return { text: "", language: "gu-IN" };
-  }
+  if (!audioUrl) return { text: "", language: "gu-IN" };
 
   const request = {
     audio: { uri: audioUrl },
@@ -62,9 +52,7 @@ async function speechToTextFromUrl(audioUrl) {
   const [response] = await speechClient.recognize(request);
   const result = response.results?.[0];
 
-  if (!result) {
-    return { text: "", language: "gu-IN" };
-  }
+  if (!result) return { text: "", language: "gu-IN" };
 
   return {
     text: result.alternatives[0].transcript,
@@ -73,42 +61,30 @@ async function speechToTextFromUrl(audioUrl) {
 }
 
 /* ======================
-   GOOGLE SHEETS CONFIG
+   GROQ AI LOGIC
 ====================== */
-const sheetsAuth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-
-const sheets = google.sheets({
-  version: "v4",
-  auth: sheetsAuth,
-});
-
-// ⬇️ ADD YOUR SHEET ID HERE
-const SPREADSHEET_ID = "12cCD2SVd3XnGdQg352NqcvCsWIq2UUDYLNpJryshVTg";
-
-
-/* ======================
-   GROQ AI BRAIN
-====================== */
-async function askGroq({ text, language }) {
+async function askGroq({ text, stage }) {
   const systemPrompt = `
-You are a polite AI voice assistant.
+You are a polite government AI voice assistant.
 
-Language rules:
-- gu-IN → Gujarati
-- hi-IN → Hindi
-- en-IN → English
+You must strictly follow stages.
 
-Decision rules:
-- Work completed → status = completed
-- Pending / later → status = pending
-- Ask for human / agent / help → status = handoff
+STAGES:
+1. name_collect → ask user's full name
+2. name_confirm → repeat name and ask confirmation
+3. work_status → ask if work is completed
 
-Respond ONLY in JSON:
+Rules:
+- If name confirmed → move to work_status
+- If name denied → ask name again
+- Work completed → status=completed
+- Work pending → status=pending
+- Ask for human → status=handoff
+
+Reply ONLY in JSON:
 {
-  "reply": "...",
+  "reply": "",
+  "nextStage": "name_collect | name_confirm | work_status | end",
   "status": "continue | completed | pending | handoff"
 }
 `;
@@ -125,7 +101,7 @@ Respond ONLY in JSON:
         model: "llama3-8b-8192",
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: text },
+          { role: "user", content: `Stage: ${stage}\nUser said: ${text}` },
         ],
         temperature: 0.3,
       }),
@@ -137,76 +113,82 @@ Respond ONLY in JSON:
 }
 
 /* ======================
-   Logging Function
+   ANSWER CALL (OPENING)
 ====================== */
-async function logCallToSheet({
-  language,
-  userText,
-  status,
-  duration,
-}) {
-  const timestamp = new Date().toLocaleString("en-IN");
+app.post("/answer", (req, res) => {
+  const callSid = req.body.CallSid;
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "A:E",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[
-        timestamp,
-        language,
-        userText,
-        status,
-        duration,
-      ]],
-    },
+  callSessions.set(callSid, {
+    stage: "name_collect",
+    name: "",
   });
-}
+
+  res.set("Content-Type", "text/xml");
+  res.send(`
+    <Response>
+      <Say language="gu-IN">
+        નમસ્તે,
+        હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+
+        આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન
+        આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ કરવી.
+
+        શું હું આપનો થોડો સમય લઈ શકું?
+      </Say>
+      <Record action="/process-response" method="POST" maxLength="5" playBeep="true"/>
+    </Response>
+  `);
+});
 
 /* ======================
-   PROCESS USER RESPONSE
+   PROCESS RESPONSE
 ====================== */
 app.post("/process-response", async (req, res) => {
   res.set("Content-Type", "text/xml");
 
+  const callSid = req.body.CallSid;
   const recordingUrl = req.body.RecordingUrl;
+
+  const session = callSessions.get(callSid) || {
+    stage: "name_collect",
+    name: "",
+  };
+
   const { text, language } = await speechToTextFromUrl(recordingUrl);
 
-  const aiResult = await askGroq({
-    text: text || "No response",
-    language,
+  const ai = await askGroq({
+    text,
+    stage: session.stage,
   });
 
-  const reply = aiResult.reply;
-  const status = aiResult.status;
+  if (ai.nextStage === "name_confirm") {
+    session.name = text;
+  }
 
-   await logCallToSheet({
-  language,
-  userText: text,
-  status,
-  duration: 0 // placeholder for now
-});
+  if (ai.nextStage) {
+    session.stage = ai.nextStage;
+  }
 
-  if (status === "handoff") {
+  callSessions.set(callSid, session);
+
+  if (ai.status === "handoff") {
     res.send(`
       <Response>
-        <Say language="${language}">
-          ${reply}
-        </Say>
+        <Say language="${language}">${ai.reply}</Say>
         <Dial>
           <Number>917874187762</Number>
         </Dial>
       </Response>
     `);
-  } else {
-    res.send(`
-      <Response>
-        <Say language="${language}">
-          ${reply}
-        </Say>
-      </Response>
-    `);
+    return;
   }
+
+  res.send(`
+    <Response>
+      <Say language="${language}">${ai.reply}</Say>
+      <Record action="/process-response" method="POST" maxLength="5" playBeep="true"/>
+    </Response>
+  `);
 });
 
 /* ======================
@@ -215,7 +197,7 @@ app.post("/process-response", async (req, res) => {
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
-    if (!to) return res.status(400).json({ error: "Missing 'to' number" });
+    if (!to) return res.status(400).json({ error: "Missing number" });
 
     const url = `https://api.exotel.com/v1/Accounts/${process.env.EXOTEL_ACCOUNT_SID}/Calls/connect.json`;
 
