@@ -120,9 +120,17 @@ app.post("/answer", (req, res) => {
   res.send(`
     <?xml version="1.0" encoding="UTF-8"?>
     <Response>
-      <Say voice="female">
-        નમસ્તે, આ એક ટેસ્ટ કોલ છે. કૃપા કરીને લાઇન પર રહો.
+      <Say language="gu-IN">
+        નમસ્તે,
+        હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+        કૃપા કરીને તમારું પૂરું નામ બોલો.
       </Say>
+      <Record
+        action="/process-response"
+        method="POST"
+        maxLength="5"
+        playBeep="true"
+      />
     </Response>
   `);
 });
