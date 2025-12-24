@@ -3,6 +3,7 @@ import express from "express";
 import bodyParser from "body-parser";
 import speech from "@google-cloud/speech";
 import { google } from "googleapis";
+import { getMemory, saveMemory } from "./utils/memory.js";
 
 
 const app = express();
