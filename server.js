@@ -1,21 +1,20 @@
+/************************************
+ * TWILIO → RETELL AI BRIDGE
+ * SAFE VERSION (LOW CREDIT)
+ ************************************/
+
 import express from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import twilio from "twilio";
+import fetch from "node-fetch";
 
 dotenv.config();
 
 const app = express();
-
-/* ======================
-   MIDDLEWARE
-====================== */
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-/* ======================
-   TWILIO CLIENT
-====================== */
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -25,76 +24,51 @@ const twilioClient = twilio(
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("Twilio AI Voice Agent Server running");
+  res.send("✅ Twilio → Retell bridge running");
 });
 
 /* ======================
-   INBOUND CALL (TWILIO → SERVER)
+   INBOUND CALL FROM TWILIO
 ====================== */
-app.post("/twilio/answer", (req, res) => {
+app.post("/twilio/answer", async (req, res) => {
   res.type("text/xml");
+
+  // Retell WebSocket URL
+  const RETELL_WS = `wss://api.retellai.com/voice/stream?agent_id=${process.env.RETELL_AGENT_ID}`;
 
   res.send(`
     <Response>
-      <Say voice="alice">
-        Hello! This is your AI voice assistant.
-        Please speak after the beep.
-      </Say>
-
-      <Record
-        action="https://exotel-voice-agent.onrender.com/twilio/process"
-        method="POST"
-        playBeep="true"
-        timeout="6"
-      />
+      <Connect>
+        <Stream url="${RETELL_WS}" />
+      </Connect>
     </Response>
   `);
 });
 
 /* ======================
-   PROCESS SPEECH
-====================== */
-app.post("/twilio/process", (req, res) => {
-  res.type("text/xml");
-
-  res.send(`
-    <Response>
-      <Say voice="alice">
-        Thank you. This confirms two way calling is working perfectly.
-      </Say>
-      <Hangup/>
-    </Response>
-  `);
-});
-
-/* ======================
-   OUTBOUND CALL API
+   OUTBOUND CALL (MANUAL ONLY)
 ====================== */
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
-
-    if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
-    }
+    if (!to) return res.status(400).json({ error: "Missing number" });
 
     const call = await twilioClient.calls.create({
       to,
       from: process.env.TWILIO_PHONE_NUMBER,
-      url: "https://exotel-voice-agent.onrender.com/twilio/answer"
+      url: `${process.env.BASE_URL}/twilio/answer`
     });
 
-    res.json({ success: true, sid: call.sid });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+    res.json({ success: true, callSid: call.sid });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
 /* ======================
    START SERVER
 ====================== */
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("🚀 Server running on port", PORT);
 });
