@@ -1,23 +1,38 @@
-/************************************
- * OUTBOUND AI VOICE AGENT – TWILIO
- * Safe | Deterministic | No STT yet
- ************************************/
+/*************************************************
+ * OUTBOUND VOICE AGENT – STEP 3
+ * Twilio + Google Speech-to-Text
+ * NO AI yet | NO loops | Credit safe
+ *************************************************/
 
 import express from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import twilio from "twilio";
+import fetch from "node-fetch";
+import { SpeechClient } from "@google-cloud/speech";
 
 dotenv.config();
 
 const app = express();
+
+/* ======================
+   MIDDLEWARE
+====================== */
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
+/* ======================
+   TWILIO CLIENT
+====================== */
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+/* ======================
+   GOOGLE STT CLIENT
+====================== */
+const speechClient = new SpeechClient();
 
 /* ======================
    HEALTH CHECK
@@ -27,7 +42,32 @@ app.get("/", (req, res) => {
 });
 
 /* ======================
-   ENTRY POINT FOR CALL
+   OUTBOUND CALL TRIGGER
+====================== */
+app.post("/call", async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    if (!to) {
+      return res.status(400).json({ error: "Missing 'to' number" });
+    }
+
+    const call = await client.calls.create({
+      to,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${process.env.BASE_URL}/twilio/answer`,
+      method: "POST"
+    });
+
+    res.json({ success: true, callSid: call.sid });
+  } catch (err) {
+    console.error("❌ Call error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================
+   CALL ANSWER (TWIML)
 ====================== */
 app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
@@ -35,12 +75,11 @@ app.post("/twilio/answer", (req, res) => {
   res.send(`
 <Response>
   <Say voice="alice">
-    Hello. This is your AI voice assistant.
-    Please speak after the beep.
+    Hello. Please speak after the beep.
   </Say>
 
   <Record
-    action="https://exotel-voice-agent.onrender.com/twilio/process"
+    action="${process.env.BASE_URL}/twilio/process"
     method="POST"
     playBeep="true"
     timeout="3"
@@ -54,59 +93,65 @@ app.post("/twilio/answer", (req, res) => {
 /* ======================
    PROCESS USER SPEECH
 ====================== */
-app.post("/twilio/process", (req, res) => {
+app.post("/twilio/process", async (req, res) => {
   res.type("text/xml");
 
   const recordingUrl = req.body.RecordingUrl;
 
-  // If nothing recorded
   if (!recordingUrl) {
     return res.send(`
 <Response>
-  <Say voice="alice">
-    I did not hear anything. Goodbye.
-  </Say>
+  <Say>I did not hear anything. Goodbye.</Say>
   <Hangup/>
 </Response>
     `);
   }
 
-  // TEMP RESPONSE (AI will go here later)
-  res.send(`
+  try {
+    /* 1️⃣ Download audio from Twilio */
+    const audioResponse = await fetch(`${recordingUrl}.wav`);
+    const audioBuffer = await audioResponse.arrayBuffer();
+
+    /* 2️⃣ Google Speech-to-Text */
+    const [sttResponse] = await speechClient.recognize({
+      audio: {
+        content: Buffer.from(audioBuffer).toString("base64")
+      },
+      config: {
+        encoding: "LINEAR16",
+        sampleRateHertz: 8000,
+        languageCode: "gu-IN",
+        alternativeLanguageCodes: ["hi-IN", "en-IN"]
+      }
+    });
+
+    const transcript =
+      sttResponse.results?.[0]?.alternatives?.[0]?.transcript || "";
+
+    console.log("🗣 USER SAID:", transcript);
+
+    /* 3️⃣ Simple confirmation reply */
+    res.send(`
 <Response>
-  <Say voice="alice">
-    Thank you. This confirms two way calling is working perfectly.
+  <Say>
+    Thank you. I heard you say: ${transcript || "nothing clear"}.
+    This confirms speech recognition is working.
   </Say>
   <Hangup/>
 </Response>
-  `);
-});
+    `);
 
-/* ======================
-   OUTBOUND CALL API
-====================== */
-app.post("/call", async (req, res) => {
-  try {
-    const { to } = req.body;
+  } catch (error) {
+    console.error("❌ STT error:", error.message);
 
-    if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
-    }
-
-    const call = await client.calls.create({
-      to,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      url: "https://exotel-voice-agent.onrender.com/twilio/answer",
-      method: "POST"
-    });
-
-    res.json({
-      success: true,
-      callSid: call.sid
-    });
-  } catch (err) {
-    console.error("❌ Call error:", err.message);
-    res.status(500).json({ error: err.message });
+    res.send(`
+<Response>
+  <Say>
+    Sorry, there was an error understanding your speech.
+  </Say>
+  <Hangup/>
+</Response>
+    `);
   }
 });
 
