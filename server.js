@@ -4,8 +4,29 @@ import bodyParser from "body-parser";
 import speech from "@google-cloud/speech";
 import { google } from "googleapis";
 import { getMemory, saveMemory } from "./utils/memory.js";
+import twilio from "twilio";
 
-console.log("TWILIO SID:", process.env.TWILIO_ACCOUNT_SID);
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+
+  try {
+    const call = await client.calls.create({
+      to: to, // +91XXXXXXXXXX
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: "https://exotel-voice-agent.onrender.com/twilio/answer"
+    });
+
+    res.json({ success: true, sid: call.sid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
