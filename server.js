@@ -18,24 +18,28 @@ app.get("/", (req, res) => {
 });
 
 /* ======================
-   ANSWER CALL (GREETING)
+   ANSWER CALL (ENTRY POINT)
 ====================== */
 app.post("/answer", (req, res) => {
   res.set("Content-Type", "text/xml");
+
   res.send(`
     <Response>
       <Say language="gu-IN">
-        નમસ્તે! શું તમારું કામ પૂરું થઈ ગયું છે?
+        નમસ્તે! હું રાહી તરફથી બોલી રહ્યો છું.
+        શું હમણાં વાત કરવા માટે સમય છે?
       </Say>
+
       <Record
         action="/process-response"
         method="POST"
-        maxLength="5"
-        playBeep="true"
+        playBeep="false"
+        maxLength="10"
       />
     </Response>
   `);
 });
+
 
 /* ======================
    GOOGLE STT CLIENT
