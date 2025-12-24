@@ -1,7 +1,8 @@
 /*************************************************
- * OUTBOUND VOICE AGENT – STEP 3
+ * OUTBOUND VOICE AGENT – STEP 3 (FIXED)
  * Twilio + Google Speech-to-Text
- * NO AI yet | NO loops | Credit safe
+ * Gujarati / Hindi / English
+ * NO AI | NO loops | Credit safe
  *************************************************/
 
 import express from "express";
@@ -108,18 +109,16 @@ app.post("/twilio/process", async (req, res) => {
   }
 
   try {
-    /* 1️⃣ Download audio from Twilio */
-    const audioResponse = await fetch(`${recordingUrl}.wav`);
+    /* 1️⃣ Download Twilio audio (no format assumptions) */
+    const audioResponse = await fetch(recordingUrl);
     const audioBuffer = await audioResponse.arrayBuffer();
 
-    /* 2️⃣ Google Speech-to-Text */
+    /* 2️⃣ Google Speech-to-Text (AUTO-DETECT) */
     const [sttResponse] = await speechClient.recognize({
       audio: {
         content: Buffer.from(audioBuffer).toString("base64")
       },
       config: {
-        encoding: "LINEAR16",
-        sampleRateHertz: 8000,
         languageCode: "gu-IN",
         alternativeLanguageCodes: ["hi-IN", "en-IN"]
       }
@@ -130,19 +129,19 @@ app.post("/twilio/process", async (req, res) => {
 
     console.log("🗣 USER SAID:", transcript);
 
-    /* 3️⃣ Simple confirmation reply */
+    /* 3️⃣ Confirm speech */
     res.send(`
 <Response>
   <Say>
     Thank you. I heard you say: ${transcript || "nothing clear"}.
-    This confirms speech recognition is working.
+    Speech recognition is now working.
   </Say>
   <Hangup/>
 </Response>
     `);
 
   } catch (error) {
-    console.error("❌ STT error:", error.message);
+    console.error("❌ STT error:", error);
 
     res.send(`
 <Response>
