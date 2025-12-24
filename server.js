@@ -170,41 +170,63 @@ async function logCallToSheet({
 app.post("/process-response", async (req, res) => {
   res.set("Content-Type", "text/xml");
 
-  const recordingUrl = req.body.RecordingUrl;
-  const { text, language } = await speechToTextFromUrl(recordingUrl);
+  try {
+    const callSid = req.body.CallSid || "unknown-call";
+    const recordingUrl = req.body.RecordingUrl;
 
-  const aiResult = await askGroq({
-    text: text || "No response",
-    language,
-  });
+    // 1️⃣ Speech → Text (auto language detection)
+    const { text, language } = await speechToTextFromUrl(recordingUrl);
 
-  const reply = aiResult.reply;
-  const status = aiResult.status;
+    // 2️⃣ Save user message to memory
+    saveMemory(callSid, "user", text || "");
 
-   await logCallToSheet({
-  language,
-  userText: text,
-  status,
-  duration: 0 // placeholder for now
-});
+    // 3️⃣ Ask AI with conversation memory
+    const aiReply = await askGroq({
+      text: text || "No response from user",
+      language,
+      memory: getMemory(callSid),
+    });
 
-  if (status === "handoff") {
+    // 4️⃣ Save AI reply to memory
+    saveMemory(callSid, "assistant", aiReply.reply);
+
+    // 5️⃣ Decide response
+    if (aiReply.status === "handoff") {
+      res.send(`
+        <Response>
+          <Say language="${language}">
+            ${aiReply.reply}
+          </Say>
+          <Dial>
+            <Number>917874187762</Number>
+          </Dial>
+        </Response>
+      `);
+    } else {
+      res.send(`
+        <Response>
+          <Say language="${language}">
+            ${aiReply.reply}
+          </Say>
+          <Record
+            action="/process-response"
+            method="POST"
+            playBeep="false"
+            maxLength="10"
+          />
+        </Response>
+      `);
+    }
+  } catch (error) {
+    console.error("Process response error:", error);
+
+    // Safe fallback (never break the call)
     res.send(`
       <Response>
-        <Say language="${language}">
-          ${reply}
+        <Say language="gu-IN">
+          માફ કરશો, થોડી ક્ષણ માટે ફરી પ્રયાસ કરીએ.
         </Say>
-        <Dial>
-          <Number>917874187762</Number>
-        </Dial>
-      </Response>
-    `);
-  } else {
-    res.send(`
-      <Response>
-        <Say language="${language}">
-          ${reply}
-        </Say>
+        <Record action="/process-response" method="POST" />
       </Response>
     `);
   }
