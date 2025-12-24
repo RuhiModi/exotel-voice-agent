@@ -5,6 +5,7 @@ import speech from "@google-cloud/speech";
 import { google } from "googleapis";
 import { getMemory, saveMemory } from "./utils/memory.js";
 
+console.log("TWILIO SID:", process.env.TWILIO_ACCOUNT_SID);
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -239,6 +240,7 @@ app.post("/process-response", async (req, res) => {
 /* ======================
    OUTBOUND CALL
 ====================== */
+/* ======================
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
@@ -276,6 +278,20 @@ app.post("/call", async (req, res) => {
     console.error("Outbound call error:", error);
     res.status(500).send("Outbound call failed");
   }
+});
+====================== */
+
+import twilio from "twilio";
+
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+await client.calls.create({
+  to: "+91XXXXXXXXXX",
+  from: process.env.TWILIO_PHONE_NUMBER,
+  url: "https://exotel-voice-agent.onrender.com/twilio/answer"
 });
 
 /* ======================
