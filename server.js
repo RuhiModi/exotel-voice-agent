@@ -242,9 +242,12 @@ app.post("/process-response", async (req, res) => {
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
-    if (!to) return res.status(400).json({ error: "Missing 'to' number" });
 
-    const url = `https://api.exotel.com/v1/Accounts/${process.env.EXOTEL_ACCOUNT_SID}/Calls/connect.json`;
+    if (!to) {
+      return res.status(400).json({ error: "Missing 'to' number" });
+    }
+
+    const exotelUrl = `https://api.exotel.com/v1/Accounts/${process.env.EXOTEL_ACCOUNT_SID}/Calls/connect.json`;
 
     const body = new URLSearchParams({
       From: process.env.EXOTEL_EXOPHONE,
@@ -257,7 +260,7 @@ app.post("/call", async (req, res) => {
       `${process.env.EXOTEL_API_KEY}:${process.env.EXOTEL_API_TOKEN}`
     ).toString("base64");
 
-    const response = await fetch(url, {
+    const response = await fetch(exotelUrl, {
       method: "POST",
       headers: {
         Authorization: `Basic ${auth}`,
@@ -266,10 +269,12 @@ app.post("/call", async (req, res) => {
       body,
     });
 
-    res.send(await response.text());
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Call failed");
+    const data = await response.text();
+    res.send(data);
+
+  } catch (error) {
+    console.error("Outbound call error:", error);
+    res.status(500).send("Outbound call failed");
   }
 });
 
