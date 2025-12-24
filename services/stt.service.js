@@ -1,9 +1,28 @@
-import axios from "axios";
+import speech from "@google-cloud/speech";
+
+const client = new speech.SpeechClient({
+  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
+});
 
 export async function speechToText(audioUrl) {
-  // Google STT supports auto language detection
+  if (!audioUrl) return { text: "", language: "gu-IN" };
+
+  const request = {
+    audio: { uri: audioUrl },
+    config: {
+      encoding: "LINEAR16",
+      sampleRateHertz: 8000,
+      languageCode: "gu-IN",
+      alternativeLanguageCodes: ["hi-IN", "en-IN"],
+      enableAutomaticPunctuation: true,
+    },
+  };
+
+  const [response] = await client.recognize(request);
+  const result = response.results?.[0];
+
   return {
-    text: "User said something",
-    language: "gu-IN" // gu-IN | hi-IN | en-IN
+    text: result?.alternatives?.[0]?.transcript || "",
+    language: result?.languageCode || "gu-IN",
   };
 }
