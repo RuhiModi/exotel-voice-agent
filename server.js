@@ -1,59 +1,89 @@
-/*************************************************
- * AI VOICE AGENT – OUTBOUND ONLY (SAFE VERSION)
- * Twilio + Google STT (Gujarati/Hindi)
- * Rule-based decision logic (NO LLM)
- *************************************************/
+/************************************
+ * OUTBOUND AI VOICE AGENT – TWILIO
+ * Safe | Deterministic | No STT yet
+ ************************************/
 
 import express from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import twilio from "twilio";
-import fs from "fs";
-import fetch from "node-fetch";
-import { SpeechClient } from "@google-cloud/speech";
-import { google } from "googleapis";
 
 dotenv.config();
-const app = express();
 
-/* ======================
-   MIDDLEWARE
-====================== */
+const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-/* ======================
-   TWILIO CLIENT
-====================== */
-const twilioClient = twilio(
+const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
 /* ======================
-   GOOGLE STT CLIENT
-====================== */
-const speechClient = new SpeechClient();
-
-/* ======================
-   GOOGLE SHEET
-====================== */
-const auth = new google.auth.GoogleAuth({
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-const sheets = google.sheets({ version: "v4", auth });
-
-const SHEET_ID = "PASTE_YOUR_SHEET_ID_HERE";
-
-/* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Outbound AI Voice Agent running");
+  res.send("✅ Twilio Outbound Voice Agent Running");
 });
 
 /* ======================
-   OUTBOUND CALL TRIGGER
+   ENTRY POINT FOR CALL
+====================== */
+app.post("/twilio/answer", (req, res) => {
+  res.type("text/xml");
+
+  res.send(`
+<Response>
+  <Say voice="alice">
+    Hello. This is your AI voice assistant.
+    Please speak after the beep.
+  </Say>
+
+  <Record
+    action="https://exotel-voice-agent.onrender.com/twilio/process"
+    method="POST"
+    playBeep="true"
+    timeout="3"
+    maxLength="6"
+    finishOnKey="#"
+  />
+</Response>
+  `);
+});
+
+/* ======================
+   PROCESS USER SPEECH
+====================== */
+app.post("/twilio/process", (req, res) => {
+  res.type("text/xml");
+
+  const recordingUrl = req.body.RecordingUrl;
+
+  // If nothing recorded
+  if (!recordingUrl) {
+    return res.send(`
+<Response>
+  <Say voice="alice">
+    I did not hear anything. Goodbye.
+  </Say>
+  <Hangup/>
+</Response>
+    `);
+  }
+
+  // TEMP RESPONSE (AI will go here later)
+  res.send(`
+<Response>
+  <Say voice="alice">
+    Thank you. This confirms two way calling is working perfectly.
+  </Say>
+  <Hangup/>
+</Response>
+  `);
+});
+
+/* ======================
+   OUTBOUND CALL API
 ====================== */
 app.post("/call", async (req, res) => {
   try {
@@ -63,129 +93,21 @@ app.post("/call", async (req, res) => {
       return res.status(400).json({ error: "Missing 'to' number" });
     }
 
-    const call = await twilioClient.calls.create({
+    const call = await client.calls.create({
       to,
       from: process.env.TWILIO_PHONE_NUMBER,
-      url: `${process.env.BASE_URL}/twilio/answer`,
-      method: "POST",
+      url: "https://exotel-voice-agent.onrender.com/twilio/answer",
+      method: "POST"
     });
 
-    res.json({ success: true, callSid: call.sid });
+    res.json({
+      success: true,
+      callSid: call.sid
+    });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Call error:", err.message);
     res.status(500).json({ error: err.message });
   }
-});
-
-/* ======================
-   CALL ANSWER (TWIML)
-====================== */
-app.post("/twilio/answer", (req, res) => {
-  res.type("text/xml");
-
-  res.send(`
-<Response>
-  <Say voice="alice" language="hi-IN">
-    नमस्ते, मैं हरियाणा सरकार की डिजिटल सेवा से बोल रहा हूँ।
-    कृपया बीप के बाद जवाब दें।
-  </Say>
-  <Record
-    action="${process.env.BASE_URL}/twilio/process"
-    method="POST"
-    playBeep="true"
-    timeout="6"
-  />
-</Response>
-  `);
-});
-
-/* ======================
-   PROCESS USER SPEECH
-====================== */
-app.post("/twilio/process", async (req, res) => {
-  res.type("text/xml");
-
-  const recordingUrl = req.body.RecordingUrl;
-  const from = req.body.From || "Unknown";
-
-  if (!recordingUrl) {
-    return res.send(`
-<Response>
-  <Say>मुझे आपकी आवाज़ सुनाई नहीं दी। धन्यवाद।</Say>
-  <Hangup/>
-</Response>
-    `);
-  }
-
-  // Download audio
-  const audioResponse = await fetch(`${recordingUrl}.wav`);
-  const audioBuffer = await audioResponse.arrayBuffer();
-
-  // Google STT
-  const [sttResponse] = await speechClient.recognize({
-    audio: { content: Buffer.from(audioBuffer).toString("base64") },
-    config: {
-      encoding: "LINEAR16",
-      sampleRateHertz: 8000,
-      languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"],
-    },
-  });
-
-  const userText =
-    sttResponse.results?.[0]?.alternatives?.[0]?.transcript || "";
-
-  /* ======================
-     DECISION LOGIC (NO AI)
-  ====================== */
-  let reply = "";
-  let status = "";
-
-  if (userText.includes("હા") || userText.includes("yes")) {
-    reply = "આભાર. આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે.";
-    status = "Completed";
-  } else if (userText.includes("બાકી")) {
-    reply =
-      "સમજી લીધું. હવે તમને માનવી એજન્ટ સાથે જોડવામાં આવે છે.";
-    status = "Transferred";
-  } else if (
-    userText.includes("ના") ||
-    userText.includes("સમય નથી")
-  ) {
-    reply = "કોઈ વાત નથી. અમે પછી સંપર્ક કરીશું.";
-    status = "Not Available";
-  } else {
-    reply =
-      "માફ કરશો, હું સમજી શક્યો નહીં. હવે માનવી એજન્ટ જોડાય છે.";
-    status = "Fallback";
-  }
-
-  // Save to Google Sheet
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: "Sheet1!A:D",
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[from, status, userText, new Date().toISOString()]],
-    },
-  });
-
-  // Transfer or end
-  if (status === "Transferred" || status === "Fallback") {
-    return res.send(`
-<Response>
-  <Say>${reply}</Say>
-  <Dial>${process.env.HUMAN_AGENT_NUMBER}</Dial>
-</Response>
-    `);
-  }
-
-  res.send(`
-<Response>
-  <Say>${reply}</Say>
-  <Hangup/>
-</Response>
-  `);
 });
 
 /* ======================
@@ -193,5 +115,5 @@ app.post("/twilio/process", async (req, res) => {
 ====================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 Outbound AI Voice Agent live");
+  console.log(`🚀 Server running on port ${PORT}`);
 });
