@@ -1,6 +1,5 @@
 /*************************************************
- * OUTBOUND VOICE AGENT – STEP 3 (ABSOLUTE FINAL)
- * Twilio + Google Speech-to-Text (MULAW FIX)
+ * OUTBOUND VOICE AGENT – STT FINAL (HEADER SAFE)
  *************************************************/
 
 import express from "express";
@@ -35,10 +34,7 @@ app.get("/", (req, res) => {
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
-
-  if (!to) {
-    return res.status(400).json({ error: "Missing 'to' number" });
-  }
+  if (!to) return res.status(400).json({ error: "Missing 'to'" });
 
   const call = await client.calls.create({
     to,
@@ -58,14 +54,15 @@ app.post("/twilio/answer", (req, res) => {
 
   res.send(`
 <Response>
-  <Say>Hello. Please speak after the beep.</Say>
+  <Say>Hello. Please speak clearly after the beep.</Say>
   <Record
     action="${process.env.BASE_URL}/twilio/process"
     method="POST"
     playBeep="true"
-    timeout="3"
-    maxLength="6"
-    finishOnKey="#"
+    timeout="4"
+    maxLength="10"
+    recordingChannels="mono"
+    trim="trim-silence"
   />
 </Response>
   `);
@@ -79,12 +76,8 @@ app.post("/twilio/process", async (req, res) => {
 
   try {
     const recordingUrl = req.body.RecordingUrl;
+    if (!recordingUrl) throw new Error("No recording");
 
-    if (!recordingUrl) {
-      throw new Error("No RecordingUrl");
-    }
-
-    // 🔑 Download recording WITH AUTH
     const audioResponse = await fetch(`${recordingUrl}.wav`, {
       headers: {
         Authorization:
@@ -97,16 +90,15 @@ app.post("/twilio/process", async (req, res) => {
 
     const audioBuffer = await audioResponse.arrayBuffer();
 
-    // 🔑 CORRECT Google STT CONFIG FOR TWILIO
+    // ✅ DO NOT SET encoding or sampleRate
     const [sttResponse] = await speechClient.recognize({
       audio: {
         content: Buffer.from(audioBuffer).toString("base64")
       },
       config: {
-        encoding: "MULAW",
-        sampleRateHertz: 8000,
         languageCode: "gu-IN",
-        alternativeLanguageCodes: ["hi-IN", "en-IN"]
+        alternativeLanguageCodes: ["hi-IN", "en-IN"],
+        enableAutomaticPunctuation: true
       }
     });
 
@@ -115,10 +107,19 @@ app.post("/twilio/process", async (req, res) => {
 
     console.log("🗣 USER SAID:", transcript);
 
+    if (!transcript) {
+      return res.send(`
+<Response>
+  <Say>Sorry, I could not understand your speech.</Say>
+  <Hangup/>
+</Response>
+      `);
+    }
+
     res.send(`
 <Response>
   <Say>
-    Thank you. I heard you say: ${transcript || "nothing clear"}.
+    Thank you. I heard you say: ${transcript}.
   </Say>
   <Hangup/>
 </Response>
@@ -129,9 +130,7 @@ app.post("/twilio/process", async (req, res) => {
 
     res.send(`
 <Response>
-  <Say>
-    Sorry, I could not understand your speech.
-  </Say>
+  <Say>Sorry, there was a system error.</Say>
   <Hangup/>
 </Response>
     `);
