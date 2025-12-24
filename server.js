@@ -1,6 +1,6 @@
 /*************************************************
- * AI VOICE AGENT – FINAL STABLE (NO CRASH)
- * AI speaks first | No beep | Gujarati-first
+ * TWO-WAY AI VOICE AGENT (HUMAN-LIKE)
+ * AI speaks first → User replies → AI responds
  *************************************************/
 
 import express from "express";
@@ -29,14 +29,14 @@ const speechClient = new SpeechClient();
 /* ======================
    CONSTANTS
 ====================== */
-const GUJARATI_FALLBACK =
+const FALLBACK_GU =
   "માફ કરશો, હાલમાં પૂરતી માહિતી નથી. અમે તમને પછી ફરી કોલ કરીશું.";
 
 /* ======================
    HEALTH
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ AI Voice Agent Running (Stable)");
+  res.send("✅ Two-way AI Voice Agent Running");
 });
 
 /* ======================
@@ -57,17 +57,21 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   AI SPEAKS FIRST
+   STEP 1: AI SPEAKS FIRST
 ====================== */
 app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
 
   res.send(`
 <Response>
-  <Say>
-    નમસ્તે. હું આપની સાથે થોડી માહિતી માટે વાત કરી રહ્યો છું.
+  <Say language="gu-IN">
+    નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+    આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી.
+    શું હું આપનો થોડો સમય લઈ શકું?
   </Say>
+
   <Pause length="1"/>
+
   <Record
     action="${process.env.BASE_URL}/twilio/process"
     method="POST"
@@ -81,18 +85,16 @@ app.post("/twilio/answer", (req, res) => {
 });
 
 /* ======================
-   PROCESS USER SPEECH
+   STEP 2: USER SPEAKS → AI UNDERSTANDS → AI REPLIES
 ====================== */
 app.post("/twilio/process", async (req, res) => {
   res.type("text/xml");
 
   try {
-    /* 1️⃣ Recording */
     const recordingUrl = req.body.RecordingUrl;
-    if (!recordingUrl) {
-      return endWithFallback(res);
-    }
+    if (!recordingUrl) return endCall(res, FALLBACK_GU);
 
+    /* Download audio */
     const audioResp = await fetch(`${recordingUrl}.wav`, {
       headers: {
         Authorization:
@@ -105,7 +107,7 @@ app.post("/twilio/process", async (req, res) => {
 
     const audioBuffer = await audioResp.arrayBuffer();
 
-    /* 2️⃣ Google STT */
+    /* Google STT */
     const [stt] = await speechClient.recognize({
       audio: { content: Buffer.from(audioBuffer).toString("base64") },
       config: {
@@ -120,13 +122,11 @@ app.post("/twilio/process", async (req, res) => {
 
     console.log("🗣 USER SAID:", transcript);
 
-    if (!transcript) {
-      return endWithFallback(res);
-    }
+    if (!transcript) return endCall(res, FALLBACK_GU);
 
-    /* 3️⃣ TRY GROQ (SAFE) */
+    /* Groq – intent understanding */
     let intent = "OUT_OF_SCOPE";
-    let language = "gu";
+    let lang = "gu";
 
     try {
       const groqResp = await fetch(
@@ -145,8 +145,7 @@ app.post("/twilio/process", async (req, res) => {
                 role: "system",
                 content: `
 You understand Gujarati, Hindi, English.
-Gujarati phrases like:
-"હજી ઘરે નથી પહોંચ્યો", "કાલે વાત કરીએ"
+Gujarati phrases like "હજી ઘરે નથી પહોંચ્યો" or "કાલે વાત કરીએ"
 mean CALLBACK.
 Return ONLY JSON.
 `
@@ -169,81 +168,69 @@ Return:
       );
 
       const groqJson = await groqResp.json();
-
-      if (
-        groqJson &&
-        groqJson.choices &&
-        groqJson.choices.length > 0
-      ) {
-        const parsed = JSON.parse(
-          groqJson.choices[0].message.content
-        );
+      if (groqJson?.choices?.length) {
+        const parsed = JSON.parse(groqJson.choices[0].message.content);
         intent = parsed.intent || intent;
-        language = parsed.language || language;
+        lang = parsed.language || lang;
       }
-    } catch (e) {
-      console.log("⚠️ Groq skipped, using fallback logic");
+    } catch {
+      console.log("⚠️ Groq skipped");
     }
 
-    /* 4️⃣ HUMAN-LIKE RESPONSE (SCRIPTED) */
-    let reply = GUJARATI_FALLBACK;
+    /* AI reply (your flow) */
+    let reply = FALLBACK_GU;
 
     if (intent === "CALLBACK") {
       reply =
-        language === "gu"
+        lang === "gu"
           ? "બરાબર, અમે કાલે ફરી સંપર્ક કરીશું."
-          : language === "hi"
+          : lang === "hi"
           ? "ठीक है, हम कल फिर संपर्क करेंगे।"
           : "Okay, we will call you again later.";
     }
 
     if (intent === "STATUS_DONE") {
       reply =
-        language === "gu"
-          ? "બરાબર, કામ પૂર્ણ થયાનું નોંધાયું છે."
-          : language === "hi"
-          ? "ठीक है, काम पूरा होने की जानकारी मिल गई है।"
+        lang === "gu"
+          ? "બરાબર, આપનું કામ પૂર્ણ થયાનું નોંધાયું છે."
+          : lang === "hi"
+          ? "ठीक है, काम पूरा हो चुका है।"
           : "Your work is marked as completed.";
     }
 
     if (intent === "STATUS_NOT_DONE") {
       reply =
-        language === "gu"
+        lang === "gu"
           ? "સમજાયું, કામ હજી બાકી છે."
-          : language === "hi"
+          : lang === "hi"
           ? "समझ गया, काम अभी बाकी है।"
           : "Understood, the work is still pending.";
     }
 
     if (intent === "NOT_INTERESTED") {
       reply =
-        language === "gu"
+        lang === "gu"
           ? "બરાબર, અમે ફરી સંપર્ક નહીં કરીએ."
-          : language === "hi"
+          : lang === "hi"
           ? "ठीक है, हम दोबारा संपर्क नहीं करेंगे।"
           : "Alright, we won’t contact you again.";
     }
 
-    res.send(`
-<Response>
-  <Say>${reply}</Say>
-  <Hangup/>
-</Response>
-    `);
+    endCall(res, reply);
 
   } catch (err) {
-    console.error("❌ SYSTEM ERROR:", err.message);
-    endWithFallback(res);
+    console.error("❌ ERROR:", err.message);
+    endCall(res, FALLBACK_GU);
   }
 });
 
 /* ======================
-   FALLBACK END
+   END CALL
 ====================== */
-function endWithFallback(res) {
+function endCall(res, message) {
   res.send(`
 <Response>
-  <Say>${GUJARATI_FALLBACK}</Say>
+  <Say language="gu-IN">${message}</Say>
   <Hangup/>
 </Response>
   `);
