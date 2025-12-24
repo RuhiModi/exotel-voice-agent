@@ -1,8 +1,6 @@
 /*************************************************
- * OUTBOUND VOICE AGENT – STEP 3 (FIXED)
- * Twilio + Google Speech-to-Text
- * Gujarati / Hindi / English
- * NO AI | NO loops | Credit safe
+ * OUTBOUND VOICE AGENT – STEP 3 (ABSOLUTE FINAL)
+ * Twilio + Google Speech-to-Text (MULAW FIX)
  *************************************************/
 
 import express from "express";
@@ -15,24 +13,14 @@ import { SpeechClient } from "@google-cloud/speech";
 dotenv.config();
 
 const app = express();
-
-/* ======================
-   MIDDLEWARE
-====================== */
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-/* ======================
-   TWILIO CLIENT
-====================== */
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-/* ======================
-   GOOGLE STT CLIENT
-====================== */
 const speechClient = new SpeechClient();
 
 /* ======================
@@ -43,42 +31,34 @@ app.get("/", (req, res) => {
 });
 
 /* ======================
-   OUTBOUND CALL TRIGGER
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
-  try {
-    const { to } = req.body;
+  const { to } = req.body;
 
-    if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
-    }
-
-    const call = await client.calls.create({
-      to,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      url: `${process.env.BASE_URL}/twilio/answer`,
-      method: "POST"
-    });
-
-    res.json({ success: true, callSid: call.sid });
-  } catch (err) {
-    console.error("❌ Call error:", err.message);
-    res.status(500).json({ error: err.message });
+  if (!to) {
+    return res.status(400).json({ error: "Missing 'to' number" });
   }
+
+  const call = await client.calls.create({
+    to,
+    from: process.env.TWILIO_PHONE_NUMBER,
+    url: `${process.env.BASE_URL}/twilio/answer`,
+    method: "POST"
+  });
+
+  res.json({ success: true, callSid: call.sid });
 });
 
 /* ======================
-   CALL ANSWER (TWIML)
+   ANSWER CALL
 ====================== */
 app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
 
   res.send(`
 <Response>
-  <Say voice="alice">
-    Hello. Please speak after the beep.
-  </Say>
-
+  <Say>Hello. Please speak after the beep.</Say>
   <Record
     action="${process.env.BASE_URL}/twilio/process"
     method="POST"
@@ -92,33 +72,39 @@ app.post("/twilio/answer", (req, res) => {
 });
 
 /* ======================
-   PROCESS USER SPEECH
+   PROCESS SPEECH
 ====================== */
 app.post("/twilio/process", async (req, res) => {
   res.type("text/xml");
 
-  const recordingUrl = req.body.RecordingUrl;
-
-  if (!recordingUrl) {
-    return res.send(`
-<Response>
-  <Say>I did not hear anything. Goodbye.</Say>
-  <Hangup/>
-</Response>
-    `);
-  }
-
   try {
-    /* 1️⃣ Download Twilio audio (no format assumptions) */
-    const audioResponse = await fetch(recordingUrl);
+    const recordingUrl = req.body.RecordingUrl;
+
+    if (!recordingUrl) {
+      throw new Error("No RecordingUrl");
+    }
+
+    // 🔑 Download recording WITH AUTH
+    const audioResponse = await fetch(`${recordingUrl}.wav`, {
+      headers: {
+        Authorization:
+          "Basic " +
+          Buffer.from(
+            `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+          ).toString("base64")
+      }
+    });
+
     const audioBuffer = await audioResponse.arrayBuffer();
 
-    /* 2️⃣ Google Speech-to-Text (AUTO-DETECT) */
+    // 🔑 CORRECT Google STT CONFIG FOR TWILIO
     const [sttResponse] = await speechClient.recognize({
       audio: {
         content: Buffer.from(audioBuffer).toString("base64")
       },
       config: {
+        encoding: "MULAW",
+        sampleRateHertz: 8000,
         languageCode: "gu-IN",
         alternativeLanguageCodes: ["hi-IN", "en-IN"]
       }
@@ -129,24 +115,22 @@ app.post("/twilio/process", async (req, res) => {
 
     console.log("🗣 USER SAID:", transcript);
 
-    /* 3️⃣ Confirm speech */
     res.send(`
 <Response>
   <Say>
     Thank you. I heard you say: ${transcript || "nothing clear"}.
-    Speech recognition is now working.
   </Say>
   <Hangup/>
 </Response>
     `);
 
-  } catch (error) {
-    console.error("❌ STT error:", error);
+  } catch (err) {
+    console.error("❌ STT ERROR:", err.message);
 
     res.send(`
 <Response>
   <Say>
-    Sorry, there was an error understanding your speech.
+    Sorry, I could not understand your speech.
   </Say>
   <Hangup/>
 </Response>
