@@ -1,9 +1,15 @@
-import axios from "axios";
+export function sayAndRecord(text, language) {
+  return `
+<Response>
+  <Say language="${language}">${text}</Say>
+  <Record action="/process-response" method="POST" />
+</Response>`;
+}
 
-export async function speechToText(audioUrl) {
-  // Google STT supports auto language detection
-  return {
-    text: "User said something",
-    language: "gu-IN" // gu-IN | hi-IN | en-IN
-  };
+export function sayAndHandoff(text, language, number) {
+  return `
+<Response>
+  <Say language="${language}">${text}</Say>
+  <Dial><Number>${number}</Number></Dial>
+</Response>`;
 }
