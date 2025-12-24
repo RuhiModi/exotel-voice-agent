@@ -25,41 +25,62 @@ const client = twilio(
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Twilio + Retell AI Voice Agent running");
+  res.send("✅ Twilio AI Voice Agent running (safe mode)");
 });
 
 /* ======================
-   INBOUND CALL (Twilio → Retell)
+   CALL ANSWER (Twilio hits this)
 ====================== */
 app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
 
-  const twiml = `
+  res.send(`
 <Response>
-  <Connect>
-    <Stream
-      url="wss://api.retellai.com/audio-websocket"
-    >
-      <Parameter name="agent_id" value="${process.env.RETELL_AGENT_ID}" />
-      <Parameter name="call_type" value="twilio" />
-    </Stream>
-  </Connect>
-</Response>
-`;
+  <Say voice="alice">
+    Hello. This is an automated AI call.
+    Please speak after the beep.
+  </Say>
 
-  res.send(twiml);
+  <Record
+    action="/twilio/process"
+    method="POST"
+    playBeep="true"
+    timeout="5"
+    maxLength="6"
+  />
+</Response>
+`);
+});
+
+/* ======================
+   PROCESS USER SPEECH
+   (NO LOOP, NO SECOND RECORD)
+====================== */
+app.post("/twilio/process", (req, res) => {
+  res.type("text/xml");
+
+  // Later: use RecordingUrl → Google STT → AI
+  res.send(`
+<Response>
+  <Say voice="alice">
+    Thank you. This confirms the call flow is working correctly.
+    Goodbye.
+  </Say>
+  <Hangup/>
+</Response>
+`);
 });
 
 /* ======================
    OUTBOUND CALL API
-   (Call users manually)
+   (YOU control when call happens)
 ====================== */
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
 
     if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
+      return res.status(400).json({ error: "Missing 'to' phone number" });
     }
 
     const call = await client.calls.create({
@@ -73,7 +94,7 @@ app.post("/call", async (req, res) => {
       callSid: call.sid
     });
   } catch (err) {
-    console.error("❌ Call error:", err.message);
+    console.error("❌ Twilio error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
