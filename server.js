@@ -71,10 +71,10 @@ app.post("/twilio/answer", (req, res) => {
       </Say>
 
       <Record
-        action="/twilio/process"
-        method="POST"
-        playBeep="true"
-        timeout="6"
+       action="https://exotel-voice-agent.onrender.com/twilio/process"
+       method="POST"
+       playBeep="true"
+       timeout="6"
       />
     </Response>
   `);
