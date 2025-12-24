@@ -1,318 +1,167 @@
-import fetch from "node-fetch";
-import express from "express";
-import bodyParser from "body-parser";
-import speech from "@google-cloud/speech";
-import { google } from "googleapis";
-import { getMemory, saveMemory } from "./utils/memory.js";
-import twilio from "twilio";
+/************************************
+ * AI VOICE AGENT – TWILIO VERSION
+ * Inbound + Outbound
+ * Ready for Google STT / LLM later
+ ************************************/
 
-const client = twilio(
+import express from "express";
+import dotenv from "dotenv";
+import bodyParser from "body-parser";
+import twilio from "twilio";
+import fetch from "node-fetch";
+
+dotenv.config();
+
+const app = express();
+
+/* ======================
+   MIDDLEWARE
+====================== */
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
+/* ======================
+   TWILIO CLIENT
+====================== */
+const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-app.post("/call", async (req, res) => {
-  const { to } = req.body;
+/* ======================
+   SIMPLE IN-MEMORY STORE
+   (later you can move to Redis / DB)
+====================== */
+const callMemory = new Map();
 
-  try {
-    const call = await client.calls.create({
-      to: to, // +91XXXXXXXXXX
-      from: process.env.TWILIO_PHONE_NUMBER,
-      url: "https://exotel-voice-agent.onrender.com/twilio/answer"
-    });
-
-    res.json({ success: true, sid: call.sid });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+function getMemory(callSid) {
+  if (!callMemory.has(callSid)) {
+    callMemory.set(callSid, []);
   }
-});
+  return callMemory.get(callSid);
+}
 
-
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+function saveMemory(callSid, role, text) {
+  const memory = getMemory(callSid);
+  memory.push({ role, text });
+}
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("Exotel Voice Agent Server is running");
+  res.send("✅ Twilio AI Voice Agent Server is running");
 });
 
 /* ======================
-   ANSWER CALL (ENTRY POINT)
+   TWILIO INBOUND ENTRY
+   (Called when someone dials Twilio number)
 ====================== */
-app.post("/answer", (req, res) => {
-  res.set("Content-Type", "text/xml");
+app.post("/twilio/answer", (req, res) => {
+  res.type("text/xml");
+
+  const callSid = req.body.CallSid || "UNKNOWN_CALL";
+  saveMemory(callSid, "system", "Call started");
 
   res.send(`
     <Response>
-      <Say language="gu-IN">
-        નમસ્તે! હું રાહી તરફથી બોલી રહ્યો છું.
-        શું હમણાં વાત કરવા માટે સમય છે?
+      <Say voice="alice">
+        Hello! This is your AI voice assistant.
+        Please speak after the beep.
       </Say>
 
       <Record
-        action="/process-response"
+        action="/twilio/process"
         method="POST"
-        playBeep="false"
-        maxLength="10"
+        playBeep="true"
+        timeout="6"
       />
     </Response>
   `);
 });
 
-
 /* ======================
-   GOOGLE STT CLIENT
+   PROCESS USER SPEECH
+   (This is where STT + AI will come)
 ====================== */
-const speechClient = new speech.SpeechClient({
-  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
-});
+app.post("/twilio/process", async (req, res) => {
+  res.type("text/xml");
 
-async function speechToTextFromUrl(audioUrl) {
-  if (!audioUrl) {
-    return { text: "", language: "gu-IN" };
-  }
+  const callSid = req.body.CallSid;
+  const recordingUrl = req.body.RecordingUrl;
 
-  const request = {
-    audio: { uri: audioUrl },
-    config: {
-      encoding: "LINEAR16",
-      sampleRateHertz: 8000,
-      languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"],
-      enableAutomaticPunctuation: true,
-    },
-  };
-
-  const [response] = await speechClient.recognize(request);
-  const result = response.results?.[0];
-
-  if (!result) {
-    return { text: "", language: "gu-IN" };
-  }
-
-  return {
-    text: result.alternatives[0].transcript,
-    language: result.languageCode || "gu-IN",
-  };
-}
-
-/* ======================
-   GOOGLE SHEETS CONFIG
-====================== */
-const sheetsAuth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_STT_CREDENTIALS),
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-
-const sheets = google.sheets({
-  version: "v4",
-  auth: sheetsAuth,
-});
-
-// ⬇️ ADD YOUR SHEET ID HERE
-const SPREADSHEET_ID = "12cCD2SVd3XnGdQg352NqcvCsWIq2UUDYLNpJryshVTg";
-
-
-/* ======================
-   GROQ AI BRAIN
-====================== */
-async function askGroq({ text, language }) {
-  const systemPrompt = `
-You are a polite AI voice assistant.
-
-Language rules:
-- gu-IN → Gujarati
-- hi-IN → Hindi
-- en-IN → English
-
-Decision rules:
-- Work completed → status = completed
-- Pending / later → status = pending
-- Ask for human / agent / help → status = handoff
-
-Respond ONLY in JSON:
-{
-  "reply": "...",
-  "status": "continue | completed | pending | handoff"
-}
-`;
-
-  const response = await fetch(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama3-8b-8192",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text },
-        ],
-        temperature: 0.3,
-      }),
-    }
-  );
-
-  const data = await response.json();
-  return JSON.parse(data.choices[0].message.content);
-}
-
-/* ======================
-   Logging Function
-====================== */
-async function logCallToSheet({
-  language,
-  userText,
-  status,
-  duration,
-}) {
-  const timestamp = new Date().toLocaleString("en-IN");
-
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "A:E",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[
-        timestamp,
-        language,
-        userText,
-        status,
-        duration,
-      ]],
-    },
-  });
-}
-
-/* ======================
-   PROCESS USER RESPONSE
-====================== */
-app.post("/process-response", async (req, res) => {
-  res.set("Content-Type", "text/xml");
-
-  try {
-    const callSid = req.body.CallSid || "unknown-call";
-    const recordingUrl = req.body.RecordingUrl;
-
-    // 1️⃣ Speech → Text (auto language detection)
-    const { text, language } = await speechToTextFromUrl(recordingUrl);
-
-    // 2️⃣ Save user message to memory
-    saveMemory(callSid, "user", text || "");
-
-    // 3️⃣ Ask AI with conversation memory
-    const aiReply = await askGroq({
-      text: text || "No response from user",
-      language,
-      memory: getMemory(callSid),
-    });
-
-    // 4️⃣ Save AI reply to memory
-    saveMemory(callSid, "assistant", aiReply.reply);
-
-    // 5️⃣ Decide response
-    if (aiReply.status === "handoff") {
-      res.send(`
-        <Response>
-          <Say language="${language}">
-            ${aiReply.reply}
-          </Say>
-          <Dial>
-            <Number>917874187762</Number>
-          </Dial>
-        </Response>
-      `);
-    } else {
-      res.send(`
-        <Response>
-          <Say language="${language}">
-            ${aiReply.reply}
-          </Say>
-          <Record
-            action="/process-response"
-            method="POST"
-            playBeep="false"
-            maxLength="10"
-          />
-        </Response>
-      `);
-    }
-  } catch (error) {
-    console.error("Process response error:", error);
-
-    // Safe fallback (never break the call)
-    res.send(`
+  if (!recordingUrl) {
+    return res.send(`
       <Response>
-        <Say language="gu-IN">
-          માફ કરશો, થોડી ક્ષણ માટે ફરી પ્રયાસ કરીએ.
+        <Say voice="alice">
+          I did not hear anything. Goodbye.
         </Say>
-        <Record action="/process-response" method="POST" />
+        <Hangup/>
       </Response>
     `);
   }
+
+  /********************************************************
+   * TEMP LOGIC (STT + AI PLACEHOLDER)
+   * Later:
+   * 1. Download recordingUrl
+   * 2. Google STT (Gujarati / Hindi / English)
+   * 3. LLM response
+   ********************************************************/
+
+  const fakeUserText = "User said something";
+  saveMemory(callSid, "user", fakeUserText);
+
+  // Fake AI reply for now
+  const aiReply =
+    "Thank you. This confirms two way calling is working perfectly.";
+
+  saveMemory(callSid, "assistant", aiReply);
+
+  res.send(`
+    <Response>
+      <Say voice="alice">
+        ${aiReply}
+      </Say>
+
+      <Record
+        action="/twilio/process"
+        method="POST"
+        playBeep="true"
+        timeout="6"
+      />
+    </Response>
+  `);
 });
 
 /* ======================
-   OUTBOUND CALL
+   OUTBOUND CALL API
+   (Your system calls Indian users)
 ====================== */
-/* ======================
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
 
     if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
+      return res.status(400).json({
+        error: "Missing 'to' phone number"
+      });
     }
 
-    const exotelUrl = `https://api.exotel.com/v1/Accounts/${process.env.EXOTEL_ACCOUNT_SID}/Calls/connect.json`;
-
-    const body = new URLSearchParams({
-      From: process.env.EXOTEL_EXOPHONE,
-      To: to,
-      CallerId: process.env.EXOTEL_EXOPHONE,
-      Url: "https://exotel-voice-agent.onrender.com/answer",
+    const call = await twilioClient.calls.create({
+      to: to, // +91XXXXXXXXXX
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: "https://exotel-voice-agent.onrender.com/twilio/answer"
     });
 
-    const auth = Buffer.from(
-      `${process.env.EXOTEL_API_KEY}:${process.env.EXOTEL_API_TOKEN}`
-    ).toString("base64");
-
-    const response = await fetch(exotelUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
+    res.json({
+      success: true,
+      callSid: call.sid
     });
-
-    const data = await response.text();
-    res.send(data);
-
   } catch (error) {
-    console.error("Outbound call error:", error);
-    res.status(500).send("Outbound call failed");
+    console.error("❌ Twilio outbound error:", error.message);
+    res.status(500).json({ error: error.message });
   }
-});
-====================== */
-
-import twilio from "twilio";
-
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-
-await client.calls.create({
-  to: "+91XXXXXXXXXX",
-  from: process.env.TWILIO_PHONE_NUMBER,
-  url: "https://exotel-voice-agent.onrender.com/twilio/answer"
 });
 
 /* ======================
@@ -320,5 +169,5 @@ await client.calls.create({
 ====================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
