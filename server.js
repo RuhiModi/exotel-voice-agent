@@ -63,8 +63,7 @@ app.post("/twilio/process", (req, res) => {
   res.send(`
 <Response>
   <Say voice="alice">
-    Thank you. This confirms the call flow is working correctly.
-    Goodbye.
+    AI-generated reply from your script
   </Say>
   <Hangup/>
 </Response>
