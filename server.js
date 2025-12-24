@@ -1,7 +1,7 @@
 /*************************************************
- * HYBRID AI VOICE AGENT (OUTBOUND)
+ * HYBRID AI VOICE AGENT – FINAL STABLE VERSION
  * Twilio + Google STT + Groq (Intent Only)
- * Human-like | Safe | Trial-friendly
+ * Gujarati / Hindi / English
  *************************************************/
 
 import express from "express";
@@ -35,20 +35,25 @@ app.get("/", (req, res) => {
 });
 
 /* ======================
-   OUTBOUND CALL TRIGGER
+   OUTBOUND CALL API
 ====================== */
 app.post("/call", async (req, res) => {
-  const { to } = req.body;
-  if (!to) return res.status(400).json({ error: "Missing 'to'" });
+  try {
+    const { to } = req.body;
+    if (!to) return res.status(400).json({ error: "Missing 'to'" });
 
-  const call = await twilioClient.calls.create({
-    to,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${process.env.BASE_URL}/twilio/answer`,
-    method: "POST"
-  });
+    const call = await twilioClient.calls.create({
+      to,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${process.env.BASE_URL}/twilio/answer`,
+      method: "POST"
+    });
 
-  res.json({ success: true, callSid: call.sid });
+    res.json({ success: true, callSid: call.sid });
+  } catch (err) {
+    console.error("❌ Call error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /* ======================
@@ -56,6 +61,7 @@ app.post("/call", async (req, res) => {
 ====================== */
 app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
+
   res.send(`
 <Response>
   <Say>Hello. Please speak after the beep.</Say>
@@ -79,7 +85,7 @@ app.post("/twilio/process", async (req, res) => {
   res.type("text/xml");
 
   try {
-    /* 1️⃣ Download recording (AUTH REQUIRED) */
+    /* 1️⃣ Get recording */
     const recordingUrl = req.body.RecordingUrl;
     if (!recordingUrl) throw new Error("No recording");
 
@@ -95,7 +101,7 @@ app.post("/twilio/process", async (req, res) => {
 
     const audioBuffer = await audioResp.arrayBuffer();
 
-    /* 2️⃣ Google STT (AUTO from WAV header) */
+    /* 2️⃣ Google STT (WAV header auto) */
     const [stt] = await speechClient.recognize({
       audio: { content: Buffer.from(audioBuffer).toString("base64") },
       config: {
@@ -113,54 +119,77 @@ app.post("/twilio/process", async (req, res) => {
     if (!transcript) {
       return res.send(`
 <Response>
-  <Say>Sorry, I could not understand. I will connect you to a human.</Say>
+  <Say>Sorry, I could not understand. Connecting you to a human.</Say>
   <Dial>${process.env.HUMAN_AGENT_NUMBER}</Dial>
 </Response>
       `);
     }
 
-    /* 3️⃣ Groq — INTENT UNDERSTANDING ONLY */
-    const groqResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-70b-versatile",
-        temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an intent extractor. Return ONLY valid JSON."
-          },
-          {
-            role: "user",
-            content: `
+    /* 3️⃣ Groq – INTENT UNDERSTANDING ONLY */
+    const groqResp = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-70b-versatile",
+          temperature: 0.2,
+          messages: [
+            {
+              role: "system",
+              content: `
+You are an Indian call-center intent classifier.
+You understand Gujarati, Hindi, Hinglish.
+Users may speak politely or indirectly.
+
+IMPORTANT:
+Gujarati phrases like:
+- "હજી ઘરે નથી પહોંચ્યો"
+- "કાલે વાત કરીએ"
+MEAN: CALLBACK intent.
+
+Return ONLY valid JSON.
+`
+            },
+            {
+              role: "user",
+              content: `
 User said: "${transcript}"
 
-Return JSON only:
+Return JSON:
 {
   "intent": "STATUS_DONE | STATUS_NOT_DONE | CALLBACK | NOT_INTERESTED | OUT_OF_SCOPE",
-  "confidence": number (0 to 1),
+  "confidence": number between 0 and 1,
   "language": "gu | hi | en",
   "summary": "short meaning"
-}`
-          }
-        ]
-      })
-    });
-
-    const groqJson = await groqResp.json();
-    const parsed = JSON.parse(
-      groqJson.choices[0].message.content
+}
+`
+            }
+          ]
+        })
+      }
     );
 
-    console.log("🧠 GROQ:", parsed);
+    const groqJson = await groqResp.json();
+    const parsed = JSON.parse(groqJson.choices[0].message.content);
 
-    /* 4️⃣ DECISION ENGINE (YOU CONTROL) */
-    if (parsed.confidence < 0.7 || parsed.intent === "OUT_OF_SCOPE") {
+    console.log("🧠 GROQ RESULT:", parsed);
+
+    /* 4️⃣ DECISION ENGINE (FIXED & FAIR) */
+    const SAFE_INTENTS = [
+      "STATUS_DONE",
+      "STATUS_NOT_DONE",
+      "CALLBACK",
+      "NOT_INTERESTED"
+    ];
+
+    if (
+      parsed.intent === "OUT_OF_SCOPE" ||
+      (parsed.confidence < 0.4 && !SAFE_INTENTS.includes(parsed.intent))
+    ) {
       return res.send(`
 <Response>
   <Say>I am connecting you to a human for better help.</Say>
@@ -169,7 +198,17 @@ Return JSON only:
       `);
     }
 
+    /* 5️⃣ HUMAN-LIKE REPLIES */
     let reply = "Thank you.";
+
+    if (parsed.intent === "CALLBACK") {
+      reply =
+        parsed.language === "gu"
+          ? "બરાબર, અમે કાલે ફરી સંપર્ક કરીશું."
+          : parsed.language === "hi"
+          ? "ठीक है, हम कल फिर संपर्क करेंगे।"
+          : "Okay, we will call you again tomorrow.";
+    }
 
     if (parsed.intent === "STATUS_DONE") {
       reply =
@@ -189,15 +228,6 @@ Return JSON only:
           : "Understood, the work is still pending.";
     }
 
-    if (parsed.intent === "CALLBACK") {
-      reply =
-        parsed.language === "gu"
-          ? "બરાબર, અમે પછી સંપર્ક કરીશું."
-          : parsed.language === "hi"
-          ? "ठीक है, हम बाद में कॉल करेंगे।"
-          : "Okay, we will call you later.";
-    }
-
     if (parsed.intent === "NOT_INTERESTED") {
       reply =
         parsed.language === "gu"
@@ -207,7 +237,7 @@ Return JSON only:
           : "Alright, we won’t contact you again.";
     }
 
-    /* 5️⃣ SPEAK & END */
+    /* 6️⃣ SPEAK & END */
     res.send(`
 <Response>
   <Say>${reply}</Say>
@@ -216,10 +246,11 @@ Return JSON only:
     `);
 
   } catch (err) {
-    console.error("❌ ERROR:", err.message);
+    console.error("❌ SYSTEM ERROR:", err.message);
+
     res.send(`
 <Response>
-  <Say>Sorry, I am transferring you to a human.</Say>
+  <Say>I am transferring you to a human.</Say>
   <Dial>${process.env.HUMAN_AGENT_NUMBER}</Dial>
 </Response>
     `);
