@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – PROMPT FAITHFUL
- * Two-way | Multi-turn | Male voice | No beep
+ * FLOW-DRIVEN GUJARATI AI VOICE AGENT
+ * Two-way | Deterministic | No confusion
  *************************************************/
 
 import express from "express";
@@ -24,7 +24,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /* ======================
-   AUDIO DIR
+   AUDIO DIRECTORY
 ====================== */
 const AUDIO_DIR = path.join(__dirname, "audio");
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
@@ -41,53 +41,84 @@ const ttsClient = new textToSpeech.TextToSpeechClient();
 const sttClient = new SpeechClient();
 
 /* ======================
-   CALL STATE
+   CALL MEMORY
 ====================== */
 const calls = new Map();
 
 /* ======================
-   EXACT PROMPT TEXTS
+   FLOW (FROM YOUR JSON)
 ====================== */
-const P = {
-  INTRO: `નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
-આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી.
-શું હું આપનો થોડો સમય લઈ શકું?`,
+const FLOW = {
+  intro: {
+    prompt:
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
+    next: (t) => {
+      if (/હા|ચાલે|લીધી શકો/.test(t)) return "task_check";
+      if (/સમય નથી|પછી/.test(t)) return "end_no_time";
+      return "fallback";
+    }
+  },
 
-  ASK_STATUS: `કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?`,
+  task_check: {
+    prompt:
+      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
+    next: (t) => {
+      if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
+      if (/બાકી|નથી થયું/.test(t)) return "task_pending";
+      return "fallback";
+    }
+  },
 
-  DONE: `ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે.
-આભાર, આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે.
-દરિયાપુરના ધારાસભ્ય કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.`,
+  task_done: {
+    prompt:
+      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે. આભાર. દરિયાપુરના ધારાસભ્ય કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.",
+    end: true
+  },
 
-  NOT_DONE: `માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી.
-કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો જેથી અમે યોગ્ય વિભાગ સુધી પહોંચાડી શકીએ.`,
+  task_pending: {
+    prompt:
+      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો જેથી અમે યોગ્ય વિભાગ સુધી પહોંચાડી શકીએ.",
+    next: (t) => {
+      if (t.length > 6) return "problem_recorded";
+      if (/નથી આપી શકતો|હાલ નહીં/.test(t)) return "no_details";
+      return "fallback";
+    }
+  },
 
-  DETAILS_SAVED: `આભાર, આપની માહિતી નોંધાઈ ગઈ છે.
-અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી જ સંપર્ક કરશે.`,
+  problem_recorded: {
+    prompt:
+      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી જ સંપર્ક કરશે.",
+    end: true
+  },
 
-  NO_DETAILS: `બરાબર, કોઈ વાત નથી.
-જો આપ ઈચ્છો તો પછીથી અમારી ઇ-કાર્યાલય હેલ્પલાઈન પર સંપર્ક કરી શકો છો.
-આભાર.`,
+  no_details: {
+    prompt:
+      "બરાબર. કોઈ વાત નથી. જો આપ ઈચ્છો તો પછીથી અમારી ઇ-કાર્યાલય હેલ્પલાઈન પર સંપર્ક કરી શકો છો. આભાર.",
+    end: true
+  },
 
-  NO_TIME: `બરાબર, કોઈ સમસ્યા નથી.
-આભાર, અમે પછીથી સંપર્ક કરીશું.`,
+  end_no_time: {
+    prompt:
+      "બરાબર, કોઈ સમસ્યા નથી. આભાર, અમે પછીથી સંપર્ક કરીશું.",
+    end: true
+  },
 
-  FALLBACK: `માફ કરશો, હાલમાં સિસ્ટમમાં ટેક્નિકલ સમસ્યા આવી છે.
-અમારી ટીમ જલદી જ આપને ફરીથી સંપર્ક કરશે.`
+  fallback: {
+    prompt:
+      "માફ કરશો, હાલમાં સિસ્ટમમાં ટેક્નિકલ સમસ્યા આવી છે. અમારી ટીમ જલદી જ આપને ફરીથી સંપર્ક કરશે.",
+    end: true
+  }
 };
 
 /* ======================
-   TTS (MALE GUJARATI)
+   TTS (GUJARATI MALE)
 ====================== */
 async function speak(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
   if (!fs.existsSync(filePath)) {
     const [res] = await ttsClient.synthesizeSpeech({
       input: { text },
-      voice: {
-        languageCode: "gu-IN",
-        name: "gu-IN-Standard-B"
-      },
+      voice: { languageCode: "gu-IN", name: "gu-IN-Standard-B" },
       audioConfig: { audioEncoding: "MP3" }
     });
     fs.writeFileSync(filePath, res.audioContent);
@@ -109,16 +140,19 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   CALL ANSWER
+   ANSWER (START FLOW)
 ====================== */
 app.post("/answer", async (req, res) => {
-  calls.set(req.body.CallSid, { step: "INTRO" });
-  const audio = await speak(P.INTRO, "intro.mp3");
+  const sid = req.body.CallSid;
+  calls.set(sid, "intro");
+
+  const audio = await speak(FLOW.intro.prompt, "intro.mp3");
 
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="/listen" playBeep="false" timeout="4" />
+  <Play>${process.env.BASE_URL}/audio/listen.mp3</Play>
+  <Record action="/listen" playBeep="false" timeout="4" trim="trim-silence"/>
 </Response>
   `);
 });
@@ -128,7 +162,8 @@ app.post("/answer", async (req, res) => {
 ====================== */
 app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
-  const state = calls.get(sid);
+  const stateId = calls.get(sid);
+  const state = FLOW[stateId];
 
   try {
     const audioResp = await fetch(`${req.body.RecordingUrl}.wav`, {
@@ -156,54 +191,32 @@ app.post("/listen", async (req, res) => {
 
     console.log("USER:", text);
 
-    let reply;
+    const nextId = state.next ? state.next(text) : null;
+    const next = FLOW[nextId];
 
-    // No time
-    if (/સમય નથી|પછી/.test(text)) {
-      reply = P.NO_TIME;
+    const audio = await speak(next.prompt, `${nextId}.mp3`);
+
+    if (next.end) {
       calls.delete(sid);
+      return res.type("text/xml").send(`
+<Response>
+  <Play>${audio}</Play>
+  <Hangup/>
+</Response>
+      `);
     }
 
-    // Yes, continue
-    else if (state.step === "INTRO") {
-      reply = P.ASK_STATUS;
-      state.step = "ASK_STATUS";
-    }
-
-    // Work done
-    else if (/પૂર્ણ|થઈ ગયું/.test(text)) {
-      reply = P.DONE;
-      calls.delete(sid);
-    }
-
-    // Work not done
-    else if (/બાકી|નથી થયું/.test(text)) {
-      reply = P.NOT_DONE;
-      state.step = "ASK_DETAILS";
-    }
-
-    // Details provided
-    else if (state.step === "ASK_DETAILS" && text.length > 6) {
-      reply = P.DETAILS_SAVED;
-      calls.delete(sid);
-    }
-
-    // No details
-    else {
-      reply = P.NO_DETAILS;
-      calls.delete(sid);
-    }
-
-    const audio = await speak(reply, "reply.mp3");
+    calls.set(sid, nextId);
 
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  ${calls.has(sid) ? `<Record action="/listen" playBeep="false" timeout="4"/>` : `<Hangup/>`}
+  <Play>${process.env.BASE_URL}/audio/listen.mp3</Play>
+  <Record action="/listen" playBeep="false" timeout="4" trim="trim-silence"/>
 </Response>
     `);
   } catch {
-    const audio = await speak(P.FALLBACK, "fallback.mp3");
+    const audio = await speak(FLOW.fallback.prompt, "fallback.mp3");
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
@@ -216,6 +229,7 @@ app.post("/listen", async (req, res) => {
 /* ======================
    START
 ====================== */
-app.listen(process.env.PORT || 3000, () =>
-  console.log("✅ Prompt-faithful Gujarati AI Agent running")
-);
+app.listen(process.env.PORT || 3000, async () => {
+  await speak("બરાબર, જણાવશો…", "listen.mp3");
+  console.log("✅ Flow-driven AI voice agent running");
+});
