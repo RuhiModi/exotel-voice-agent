@@ -1,6 +1,6 @@
 /*************************************************
- * TWILIO REAL-TIME VOICE AGENT (GATHER MODE)
- * No pause | Barge-in | Multi-language | Stable
+ * TWILIO GATHER AI VOICE AGENT – FINAL STABLE
+ * Fixes silent Gather + no response issues
  *************************************************/
 
 import express from "express";
@@ -22,18 +22,18 @@ const client = twilio(
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   SIMPLE LANGUAGE DETECTION
+   LANGUAGE DETECTION
 ====================== */
 function detectLanguage(text = "") {
-  if (/[\u0A80-\u0AFF]/.test(text)) return "gu-IN"; // Gujarati
-  if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
+  if (/[\u0A80-\u0AFF]/.test(text)) return "gu-IN";
+  if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
   return "en-US";
 }
 
 /* ======================
-   AI LOGIC (RULE-BASED DEMO)
+   SIMPLE AI LOGIC (DEMO)
 ====================== */
-function getReply(text, lang) {
+function aiReply(text, lang) {
   if (lang === "gu-IN") {
     if (/સમય નથી/.test(text))
       return "બરાબર, કોઈ સમસ્યા નથી. અમે પછીથી સંપર્ક કરીશું.";
@@ -54,29 +54,26 @@ function getReply(text, lang) {
     return "कृपया दोबारा बताएं।";
   }
 
-  // English
-  if (/not now/.test(text)) return "No problem, we will call you later.";
-  if (/done|completed/.test(text))
+  if (/not now/i.test(text)) return "No problem, we will call you later.";
+  if (/done|completed/i.test(text))
     return "Glad to hear your work is completed. Thank you.";
-  if (/pending/.test(text)) return "Please tell us what issue you are facing.";
+  if (/pending/i.test(text)) return "Please tell us what issue you are facing.";
   return "Could you please repeat that?";
 }
 
 /* ======================
-   HEALTH CHECK
+   HEALTH
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Twilio real-time AI voice agent running");
+  res.send("✅ Twilio Gather AI Agent Running");
 });
 
 /* ======================
    OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
-  const { to } = req.body;
-
   await client.calls.create({
-    to,
+    to: req.body.to,
     from: process.env.TWILIO_PHONE_NUMBER,
     url: `${BASE_URL}/answer`,
     method: "POST"
@@ -86,18 +83,19 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   CALL ANSWER (AI SPEAKS FIRST)
+   ANSWER – AI SPEAKS FIRST
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Gather
     input="speech"
-    bargeIn="true"
-    speechTimeout="auto"
     action="${BASE_URL}/process"
     method="POST"
     language="gu-IN"
+    speechTimeout="3"
+    actionOnEmptyResult="true"
+    enhanced="true"
   >
     <Say voice="alice" language="gu-IN">
       નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
@@ -106,42 +104,37 @@ app.post("/answer", (req, res) => {
     </Say>
   </Gather>
 
-  <!-- REQUIRED FALLBACK -->
-  <Say language="gu-IN">
-    માફ કરશો, મને આપનો અવાજ સાંભળાયો નથી.
-  </Say>
-  <Redirect>${BASE_URL}/answer</Redirect>
+  <Redirect>${BASE_URL}/process</Redirect>
 </Response>
   `);
 });
 
 /* ======================
-   PROCESS USER SPEECH (CONTINUOUS LOOP)
+   PROCESS USER SPEECH
 ====================== */
 app.post("/process", (req, res) => {
   const userText = req.body.SpeechResult || "";
+  console.log("USER SAID:", userText);
+
   const lang = detectLanguage(userText);
-  const reply = getReply(userText, lang);
+  const reply = aiReply(userText, lang);
 
   res.type("text/xml").send(`
 <Response>
   <Gather
     input="speech"
-    bargeIn="true"
-    speechTimeout="auto"
     action="${BASE_URL}/process"
     method="POST"
     language="${lang}"
+    speechTimeout="3"
+    actionOnEmptyResult="true"
+    enhanced="true"
   >
     <Say voice="alice" language="${lang}">
       ${reply}
     </Say>
   </Gather>
 
-  <!-- REQUIRED FALLBACK -->
-  <Say language="${lang}">
-    માફ કરશો, મને ફરીથી કહેશો?
-  </Say>
   <Redirect>${BASE_URL}/process</Redirect>
 </Response>
   `);
@@ -151,5 +144,5 @@ app.post("/process", (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Stable Twilio Gather AI agent running");
+  console.log("🚀 Twilio Gather AI Agent READY");
 });
