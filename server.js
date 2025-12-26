@@ -1,6 +1,6 @@
 /*************************************************
- * GOOGLE TTS VOICE TEST – GUARANTEED SPEECH
- * AI speaks first in Gujarati using <Play>
+ * GOOGLE TTS – GUARANTEED PLAY VERSION
+ * Audio generated on startup (NO silence possible)
  *************************************************/
 
 import express from "express";
@@ -22,6 +22,18 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /* ======================
+   AUDIO DIRECTORY (PUBLIC)
+====================== */
+const AUDIO_DIR = path.join(__dirname, "audio");
+if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
+app.use("/audio", express.static(AUDIO_DIR));
+
+/* ======================
+   GOOGLE TTS CLIENT
+====================== */
+const ttsClient = new textToSpeech.TextToSpeechClient();
+
+/* ======================
    TWILIO CLIENT
 ====================== */
 const twilioClient = twilio(
@@ -30,22 +42,43 @@ const twilioClient = twilio(
 );
 
 /* ======================
-   GOOGLE TTS CLIENT
+   PRE-GENERATE AUDIO (ON START)
 ====================== */
-const ttsClient = new textToSpeech.TextToSpeechClient();
+async function generateGujaratiIntro() {
+  const audioPath = path.join(AUDIO_DIR, "intro-gu.mp3");
 
-/* ======================
-   AUDIO DIR (PUBLIC)
-====================== */
-const AUDIO_DIR = path.join(__dirname, "audio");
-if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
-app.use("/audio", express.static(AUDIO_DIR));
+  if (fs.existsSync(audioPath)) {
+    console.log("🔊 Gujarati audio already exists");
+    return;
+  }
+
+  const text = `
+નમસ્તે.
+હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+આ કૉલનો હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી.
+શું હું આપનો થોડો સમય લઈ શકું?
+  `;
+
+  const [response] = await ttsClient.synthesizeSpeech({
+    input: { text },
+    voice: {
+      languageCode: "gu-IN",
+      name: "gu-IN-Standard-A"
+    },
+    audioConfig: {
+      audioEncoding: "MP3"
+    }
+  });
+
+  fs.writeFileSync(audioPath, response.audioContent, "binary");
+  console.log("✅ Gujarati TTS audio generated");
+}
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Google TTS Gujarati Voice Agent Running");
+  res.send("✅ Google TTS Gujarati Voice Server Running");
 });
 
 /* ======================
@@ -62,39 +95,15 @@ app.post("/call", async (req, res) => {
     method: "POST"
   });
 
-  res.json({ success: true, callSid: call.sid });
+  res.json({ success: true, sid: call.sid });
 });
 
 /* ======================
-   AI SPEAKS FIRST (GUJARATI)
+   TWILIO ANSWER – PLAY AUDIO
 ====================== */
-app.post("/twilio/answer", async (req, res) => {
+app.post("/twilio/answer", (req, res) => {
   res.type("text/xml");
 
-  const gujaratiText = `
-નમસ્તે.
-હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
-આ કૉલનો હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી.
-શું હું આપનો થોડો સમય લઈ શકું?
-  `;
-
-  const audioPath = path.join(AUDIO_DIR, "intro-gu.mp3");
-
-  // Generate Gujarati voice using Google TTS
-  const [ttsResponse] = await ttsClient.synthesizeSpeech({
-    input: { text: gujaratiText },
-    voice: {
-      languageCode: "gu-IN",
-      name: "gu-IN-Standard-A"
-    },
-    audioConfig: {
-      audioEncoding: "MP3"
-    }
-  });
-
-  fs.writeFileSync(audioPath, ttsResponse.audioContent, "binary");
-
-  // Play audio to caller
   res.send(`
 <Response>
   <Play>${process.env.BASE_URL}/audio/intro-gu.mp3</Play>
@@ -108,6 +117,9 @@ app.post("/twilio/answer", async (req, res) => {
    START SERVER
 ====================== */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("🚀 Server running – Google TTS active");
+
+generateGujaratiIntro().then(() => {
+  app.listen(PORT, () => {
+    console.log("🚀 Server running – Gujarati voice READY");
+  });
 });
