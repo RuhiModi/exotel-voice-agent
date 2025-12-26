@@ -1,6 +1,6 @@
 /*************************************************
- * MULTI-TURN GUJARATI AI VOICE AGENT (SMOOTH)
- * Google TTS + Google STT + Groq (fast-path)
+ * HUMAN-LIKE GUJARATI AI CALLER (MALE VOICE)
+ * No beep | No silence | Smooth flow
  *************************************************/
 
 import express from "express";
@@ -24,7 +24,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /* ======================
-   AUDIO SETUP (PUBLIC)
+   AUDIO PUBLIC DIR
 ====================== */
 const AUDIO_DIR = path.join(__dirname, "audio");
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
@@ -46,7 +46,7 @@ const sttClient = new SpeechClient();
 const callState = new Map();
 
 /* ======================
-   APPROVED DIALOGUES
+   DIALOGUES (APPROVED)
 ====================== */
 const DIALOGUES = {
   INTRO: `નમસ્તે.
@@ -70,70 +70,65 @@ const DIALOGUES = {
   NOT_INTERESTED: `બરાબર. આપની નોંધ લઈ લેવામાં આવી છે.
 આપનો સમય આપવા બદલ આભાર.`,
 
-  THINKING: `બરાબર, એક ક્ષણ આપશો.`
+  LISTENING: `બરાબર, જણાવશો.`
 };
 
 /* ======================
-   TTS CACHE (FAST)
+   TTS CACHE (MALE VOICE)
 ====================== */
-async function ensureTTS(key, fileName) {
-  const filePath = path.join(AUDIO_DIR, fileName);
+async function tts(key, file) {
+  const filePath = path.join(AUDIO_DIR, file);
   if (fs.existsSync(filePath)) {
-    return `${process.env.BASE_URL}/audio/${fileName}`;
+    return `${process.env.BASE_URL}/audio/${file}`;
   }
+
   const [res] = await ttsClient.synthesizeSpeech({
     input: { text: DIALOGUES[key] },
-    voice: { languageCode: "gu-IN", name: "gu-IN-Standard-A" },
+    voice: {
+      languageCode: "gu-IN",
+      name: "gu-IN-Standard-B" // MALE VOICE
+    },
     audioConfig: { audioEncoding: "MP3" }
   });
-  fs.writeFileSync(filePath, res.audioContent, "binary");
-  return `${process.env.BASE_URL}/audio/${fileName}`;
-}
 
-/* ======================
-   HEALTH
-====================== */
-app.get("/", (req, res) => {
-  res.send("✅ Multi-turn Gujarati AI Voice Agent (Smooth) Running");
-});
+  fs.writeFileSync(filePath, res.audioContent, "binary");
+  return `${process.env.BASE_URL}/audio/${file}`;
+}
 
 /* ======================
    OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
-  if (!to) return res.status(400).json({ error: "Missing 'to'" });
-
   const call = await twilioClient.calls.create({
     to,
     from: process.env.TWILIO_PHONE_NUMBER,
     url: `${process.env.BASE_URL}/twilio/answer`,
     method: "POST"
   });
-
-  res.json({ success: true, callSid: call.sid });
+  res.json({ success: true, sid: call.sid });
 });
 
 /* ======================
-   STEP 1: INTRO
+   AI STARTS TALKING
 ====================== */
 app.post("/twilio/answer", async (req, res) => {
   res.type("text/xml");
   const callSid = req.body.CallSid;
   callState.set(callSid, "INTRO");
 
-  const introUrl = await ensureTTS("INTRO", "intro.mp3");
+  const intro = await tts("INTRO", "intro.mp3");
 
   res.send(`
 <Response>
-  <Play>${introUrl}</Play>
+  <Play>${intro}</Play>
   <Redirect method="POST">${process.env.BASE_URL}/twilio/next</Redirect>
 </Response>
   `);
 });
 
 /* ======================
-   STEP CONTROLLER
+   FLOW CONTROL
 ====================== */
 app.post("/twilio/next", async (req, res) => {
   res.type("text/xml");
@@ -142,17 +137,20 @@ app.post("/twilio/next", async (req, res) => {
 
   if (state === "INTRO") {
     callState.set(callSid, "PURPOSE");
-    const purposeUrl = await ensureTTS("PURPOSE", "purpose.mp3");
+    const purpose = await tts("PURPOSE", "purpose.mp3");
+    const listening = await tts("LISTENING", "listening.mp3");
 
     return res.send(`
 <Response>
-  <Play>${purposeUrl}</Play>
+  <Play>${purpose}</Play>
+  <Play>${listening}</Play>
   <Record
     action="${process.env.BASE_URL}/twilio/process"
     method="POST"
     timeout="3"
     maxLength="6"
     trim="trim-silence"
+    playBeep="false"
   />
 </Response>
     `);
@@ -160,20 +158,14 @@ app.post("/twilio/next", async (req, res) => {
 });
 
 /* ======================
-   PROCESS USER RESPONSE (FAST)
+   PROCESS USER SPEECH
 ====================== */
 app.post("/twilio/process", async (req, res) => {
   res.type("text/xml");
 
   try {
-    const callSid = req.body.CallSid;
     const recordingUrl = req.body.RecordingUrl;
-    if (!recordingUrl) throw new Error("No recording");
 
-    // Play thinking filler immediately (no silence)
-    const thinkingUrl = await ensureTTS("THINKING", "thinking.mp3");
-
-    // Download audio
     const audioResp = await fetch(`${recordingUrl}.wav`, {
       headers: {
         Authorization:
@@ -183,90 +175,41 @@ app.post("/twilio/process", async (req, res) => {
           ).toString("base64")
       }
     });
-    const audioBuffer = await audioResp.arrayBuffer();
+    const buffer = await audioResp.arrayBuffer();
 
-    // STT (fast model)
     const [stt] = await sttClient.recognize({
-      audio: { content: Buffer.from(audioBuffer).toString("base64") },
+      audio: { content: Buffer.from(buffer).toString("base64") },
       config: {
         languageCode: "gu-IN",
         alternativeLanguageCodes: ["hi-IN", "en-IN"],
-        model: "latest_short",
         enableAutomaticPunctuation: true
       }
     });
 
-    const transcript =
+    const text =
       stt.results?.[0]?.alternatives?.[0]?.transcript || "";
-    console.log("🗣 USER:", transcript);
+    console.log("🗣 USER:", text);
 
-    // Fast-path intent (skip Groq if obvious)
-    let intent = "CALLBACK";
-    const t = transcript;
+    let reply = "CALLBACK";
+    if (/થઈ|પૂર્ણ/.test(text)) reply = "DONE";
+    else if (/નથી|બાકી/.test(text)) reply = "NOT_DONE";
+    else if (/કાલે|પછી/.test(text)) reply = "CALLBACK";
+    else if (/રસ નથી/.test(text)) reply = "NOT_INTERESTED";
 
-    if (/(થઈ ગયું|પૂર્ણ|થયું)/.test(t)) intent = "DONE";
-    else if (/(નથી થયું|બાકી)/.test(t)) intent = "NOT_DONE";
-    else if (/(કાલે|પછી|હજી)/.test(t)) intent = "CALLBACK";
-    else if (/(રસ નથી|નથી રસ)/.test(t)) intent = "NOT_INTERESTED";
-    else {
-      // Fallback to Groq only if unclear
-      const groqResp = await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: "llama-3.1-70b-versatile",
-            temperature: 0,
-            messages: [
-              {
-                role: "system",
-                content:
-                  "Classify Gujarati response into DONE, NOT_DONE, CALLBACK, NOT_INTERESTED."
-              },
-              { role: "user", content: transcript }
-            ]
-          })
-        }
-      );
-      const groqJson = await groqResp.json();
-      const text = groqJson.choices?.[0]?.message?.content || "";
-      if (/DONE/.test(text)) intent = "DONE";
-      else if (/NOT_DONE/.test(text)) intent = "NOT_DONE";
-      else if (/NOT_INTERESTED/.test(text)) intent = "NOT_INTERESTED";
-      else intent = "CALLBACK";
-    }
+    const audio = await tts(reply, `${reply}.mp3`);
+    callState.delete(req.body.CallSid);
 
-    // Choose reply
-    let replyKey = "CALLBACK";
-    if (intent === "DONE") replyKey = "DONE";
-    else if (intent === "NOT_DONE") replyKey = "NOT_DONE";
-    else if (intent === "NOT_INTERESTED") replyKey = "NOT_INTERESTED";
-
-    const replyFile =
-      replyKey.toLowerCase() + ".mp3";
-    const replyUrl = await ensureTTS(replyKey, replyFile);
-
-    callState.delete(callSid);
-
-    // Play filler + reply (smooth)
     res.send(`
 <Response>
-  <Play>${thinkingUrl}</Play>
-  <Pause length="0.5"/>
-  <Play>${replyUrl}</Play>
+  <Play>${audio}</Play>
   <Hangup/>
 </Response>
     `);
-  } catch (err) {
-    console.error("❌ ERROR:", err.message);
-    const fallbackUrl = await ensureTTS("CALLBACK", "callback.mp3");
+  } catch {
+    const fallback = await tts("CALLBACK", "callback.mp3");
     res.send(`
 <Response>
-  <Play>${fallbackUrl}</Play>
+  <Play>${fallback}</Play>
   <Hangup/>
 </Response>
     `);
@@ -278,13 +221,12 @@ app.post("/twilio/process", async (req, res) => {
 ====================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  // Warm cache (optional but recommended)
-  await ensureTTS("INTRO", "intro.mp3");
-  await ensureTTS("PURPOSE", "purpose.mp3");
-  await ensureTTS("THINKING", "thinking.mp3");
-  await ensureTTS("DONE", "done.mp3");
-  await ensureTTS("NOT_DONE", "not_done.mp3");
-  await ensureTTS("CALLBACK", "callback.mp3");
-  await ensureTTS("NOT_INTERESTED", "not_interested.mp3");
-  console.log("🚀 Server started — audio cached, smooth flow ready");
+  await tts("INTRO", "intro.mp3");
+  await tts("PURPOSE", "purpose.mp3");
+  await tts("LISTENING", "listening.mp3");
+  await tts("DONE", "done.mp3");
+  await tts("NOT_DONE", "not_done.mp3");
+  await tts("CALLBACK", "callback.mp3");
+  await tts("NOT_INTERESTED", "not_interested.mp3");
+  console.log("🚀 Human-like Gujarati AI Caller (Male) ready");
 });
