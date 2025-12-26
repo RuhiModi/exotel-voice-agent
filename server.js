@@ -1,12 +1,13 @@
 /*************************************************
- * FINAL CREDIT-SAFE TWILIO AI VOICE AGENT
- * DEMO READY — NO SILENT LOOPS — NO CREDIT BURN
+ * TWILIO REAL-TIME AI VOICE AGENT (UPGRADED)
+ * No trial prompt | Barge-in | Groq LLM | Credit-safe
  *************************************************/
 
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import twilio from "twilio";
+import fetch from "node-fetch";
 
 dotenv.config();
 
@@ -22,53 +23,53 @@ const client = twilio(
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   SIMPLE LANGUAGE DETECTION (RESPONSE ONLY)
+   LANGUAGE DETECTION (BEST-EFFORT)
 ====================== */
-function detectReplyLanguage(text = "") {
-  if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
-  return "en-US";
+function detectLanguage(text = "") {
+  if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
+  return "en-US"; // Default English (most reliable)
 }
 
 /* ======================
-   DEMO AI LOGIC (CREDIT SAFE)
+   GROQ LLM CALL (SAFE)
 ====================== */
-function aiReply(text = "") {
-  const t = text.toLowerCase();
+async function askGroq(userText) {
+  const response = await fetch(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama3-8b-8192",
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a polite government office assistant calling citizens to verify whether their work from a government camp is completed. Keep responses short and clear."
+          },
+          {
+            role: "user",
+            content: userText
+          }
+        ]
+      })
+    }
+  );
 
-  if (t.includes("not now") || t.includes("later")) {
-    return {
-      reply: "Okay, no problem. We will call you later. Thank you.",
-      end: true
-    };
-  }
-
-  if (t.includes("done") || t.includes("completed")) {
-    return {
-      reply:
-        "Thank you for confirming. We are happy your work is completed. Have a great day.",
-      end: true
-    };
-  }
-
-  if (t.includes("pending") || t.includes("not completed")) {
-    return {
-      reply:
-        "Sorry to hear that. Please briefly tell us what issue you are facing.",
-      end: false
-    };
-  }
-
-  return {
-    reply: "Sorry, I could not understand clearly. We will call again later.",
-    end: true
-  };
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ||
+    "Thank you. We will contact you again later.";
 }
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Credit-safe Twilio AI Voice Agent Running");
+  res.send("✅ Upgraded Twilio + Groq AI Voice Agent Running");
 });
 
 /* ======================
@@ -93,6 +94,7 @@ app.post("/answer", (req, res) => {
 <Response>
   <Gather
     input="speech"
+    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
     language="en-US"
@@ -102,13 +104,13 @@ app.post("/answer", (req, res) => {
   >
     <Say voice="alice" language="en-US">
       Hello. I am calling from the office of MLA Kaushik Jain.
-      This call is regarding verification of work done during the government camp.
+      This call is to verify whether your work from the government camp has been completed.
       May I take a moment of your time?
     </Say>
   </Gather>
 
   <Say>
-    Sorry, I could not hear you clearly. We will call again later.
+    Sorry, I could not hear you. We will call again later.
   </Say>
   <Hangup/>
 </Response>
@@ -116,58 +118,53 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   PROCESS USER SPEECH (CREDIT SAFE)
+   PROCESS USER SPEECH
 ====================== */
-app.post("/process", (req, res) => {
+app.post("/process", async (req, res) => {
   const userText = req.body.SpeechResult || "";
 
   console.log("USER SAID:", userText);
 
-  // 🚨 CREDIT SAFETY: EMPTY SPEECH → END CALL
+  // 🔐 Credit safety: empty or unclear speech
   if (!userText || userText.trim() === "") {
     return res.type("text/xml").send(`
 <Response>
   <Say>
-    Sorry, I could not understand. We will call again later.
+    Sorry, I could not understand clearly. We will contact you again later.
   </Say>
   <Hangup/>
 </Response>
     `);
   }
 
-  const ai = aiReply(userText);
-  const replyLang = detectReplyLanguage(userText);
-
-  if (ai.end) {
-    return res.type("text/xml").send(`
-<Response>
-  <Say language="${replyLang}">
-    ${ai.reply}
-  </Say>
-  <Hangup/>
-</Response>
-    `);
+  let aiReply;
+  try {
+    aiReply = await askGroq(userText);
+  } catch (e) {
+    aiReply = "Thank you. We will follow up shortly.";
   }
 
-  // Continue conversation
+  const replyLang = detectLanguage(userText);
+
   res.type("text/xml").send(`
 <Response>
   <Gather
     input="speech"
+    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
-    language="en-US"
+    language="${replyLang}"
     speechTimeout="3"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say language="${replyLang}">
-      ${ai.reply}
+    <Say voice="alice" language="${replyLang}">
+      ${aiReply}
     </Say>
   </Gather>
 
   <Say>
-    Sorry, I could not hear you clearly. We will call again later.
+    Thank you. We will contact you again later.
   </Say>
   <Hangup/>
 </Response>
@@ -178,5 +175,5 @@ app.post("/process", (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 FINAL CREDIT-SAFE AI AGENT READY");
+  console.log("🚀 Upgraded Twilio + Groq AI Agent READY");
 });
