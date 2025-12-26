@@ -1,6 +1,6 @@
 /*************************************************
- * REAL HUMAN-LIKE AI VOICE AGENT (GUJARATI)
- * TRUE TWO-WAY CONVERSATION (LOOP)
+ * GUJARATI AI VOICE AGENT – PROMPT FAITHFUL
+ * Two-way | Multi-turn | Male voice | No beep
  *************************************************/
 
 import express from "express";
@@ -41,156 +41,181 @@ const ttsClient = new textToSpeech.TextToSpeechClient();
 const sttClient = new SpeechClient();
 
 /* ======================
-   CALL MEMORY
+   CALL STATE
 ====================== */
 const calls = new Map();
 
 /* ======================
-   DIALOGUES (YOUR FLOW)
+   EXACT PROMPT TEXTS
 ====================== */
-const D = {
-  INTRO: "નમસ્તે. હું દરિયાપુરના ધારાસભ્ય શ્રી કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.",
-  PURPOSE:
-    "યોજનાકીય કેમ્પ દરમિયાન આપ દ્વારા રજૂ કરાયેલ કામ અંગે માહિતી મેળવવા માટે આ કૉલ છે. શું હું આપનો થોડો સમય લઈ શકું?",
-  STATUS:
-    "યોજનાકીય કેમ્પ દરમિયાન આપ દ્વારા રજૂ કરાયેલ કામ પૂર્ણ થયું છે કે નહીં, તે જણાવશો?",
-  DONE:
-    "બરાબર. આપનું કામ પૂર્ણ થયાનું નોંધવામાં આવ્યું છે. આપનો સમય આપવા બદલ ખૂબ આભાર.",
-  NOT_DONE:
-    "સમજાયું. આપનું કામ હજી બાકી હોવાનું નોંધવામાં આવ્યું છે. આપનો સમય આપવા બદલ આભાર.",
-  CALLBACK:
-    "બરાબર. અમે આપને અનુકૂળ સમયે ફરી સંપર્ક કરીશું. આપનો સમય આપવા બદલ આભાર."
+const P = {
+  INTRO: `નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી.
+શું હું આપનો થોડો સમય લઈ શકું?`,
+
+  ASK_STATUS: `કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?`,
+
+  DONE: `ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે.
+આભાર, આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે.
+દરિયાપુરના ધારાસભ્ય કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.`,
+
+  NOT_DONE: `માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી.
+કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો જેથી અમે યોગ્ય વિભાગ સુધી પહોંચાડી શકીએ.`,
+
+  DETAILS_SAVED: `આભાર, આપની માહિતી નોંધાઈ ગઈ છે.
+અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી જ સંપર્ક કરશે.`,
+
+  NO_DETAILS: `બરાબર, કોઈ વાત નથી.
+જો આપ ઈચ્છો તો પછીથી અમારી ઇ-કાર્યાલય હેલ્પલાઈન પર સંપર્ક કરી શકો છો.
+આભાર.`,
+
+  NO_TIME: `બરાબર, કોઈ સમસ્યા નથી.
+આભાર, અમે પછીથી સંપર્ક કરીશું.`,
+
+  FALLBACK: `માફ કરશો, હાલમાં સિસ્ટમમાં ટેક્નિકલ સમસ્યા આવી છે.
+અમારી ટીમ જલદી જ આપને ફરીથી સંપર્ક કરશે.`
 };
 
 /* ======================
-   TTS (MALE)
+   TTS (MALE GUJARATI)
 ====================== */
 async function speak(text, file) {
-  const p = path.join(AUDIO_DIR, file);
-  if (!fs.existsSync(p)) {
+  const filePath = path.join(AUDIO_DIR, file);
+  if (!fs.existsSync(filePath)) {
     const [res] = await ttsClient.synthesizeSpeech({
       input: { text },
-      voice: { languageCode: "gu-IN", name: "gu-IN-Standard-B" },
+      voice: {
+        languageCode: "gu-IN",
+        name: "gu-IN-Standard-B"
+      },
       audioConfig: { audioEncoding: "MP3" }
     });
-    fs.writeFileSync(p, res.audioContent);
+    fs.writeFileSync(filePath, res.audioContent);
   }
   return `${process.env.BASE_URL}/audio/${file}`;
 }
 
 /* ======================
-   START CALL
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
-  const { to } = req.body;
   const call = await twilioClient.calls.create({
-    to,
+    to: req.body.to,
     from: process.env.TWILIO_PHONE_NUMBER,
     url: `${process.env.BASE_URL}/answer`,
     method: "POST"
   });
-  res.json({ success: true, sid: call.sid });
+  res.json({ success: true });
 });
 
 /* ======================
-   ANSWER
+   CALL ANSWER
 ====================== */
 app.post("/answer", async (req, res) => {
-  const sid = req.body.CallSid;
-  calls.set(sid, { step: "INTRO" });
-
-  const audio = await speak(D.INTRO, "intro.mp3");
+  calls.set(req.body.CallSid, { step: "INTRO" });
+  const audio = await speak(P.INTRO, "intro.mp3");
 
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Redirect>${process.env.BASE_URL}/next</Redirect>
+  <Record action="/listen" playBeep="false" timeout="4" />
 </Response>
   `);
 });
 
 /* ======================
-   NEXT STEP
-====================== */
-app.post("/next", async (req, res) => {
-  const sid = req.body.CallSid;
-  const call = calls.get(sid);
-
-  let text;
-  if (call.step === "INTRO") {
-    text = D.PURPOSE;
-    call.step = "PURPOSE";
-  } else {
-    text = D.STATUS;
-    call.step = "STATUS";
-  }
-
-  const audio = await speak(text, `${call.step}.mp3`);
-
-  res.type("text/xml").send(`
-<Response>
-  <Play>${audio}</Play>
-  <Record
-    action="${process.env.BASE_URL}/listen"
-    timeout="4"
-    maxLength="6"
-    playBeep="false"
-    trim="trim-silence"
-  />
-</Response>
-  `);
-});
-
-/* ======================
-   LISTEN & RESPOND (LOOP)
+   LISTEN LOOP
 ====================== */
 app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
-  const recordingUrl = req.body.RecordingUrl;
+  const state = calls.get(sid);
 
-  const audioResp = await fetch(`${recordingUrl}.wav`, {
-    headers: {
-      Authorization:
-        "Basic " +
-        Buffer.from(
-          `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-        ).toString("base64")
+  try {
+    const audioResp = await fetch(`${req.body.RecordingUrl}.wav`, {
+      headers: {
+        Authorization:
+          "Basic " +
+          Buffer.from(
+            `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+          ).toString("base64")
+      }
+    });
+
+    const buffer = await audioResp.arrayBuffer();
+
+    const [stt] = await sttClient.recognize({
+      audio: { content: Buffer.from(buffer).toString("base64") },
+      config: {
+        languageCode: "gu-IN",
+        alternativeLanguageCodes: ["hi-IN", "en-IN"]
+      }
+    });
+
+    const text =
+      stt.results?.[0]?.alternatives?.[0]?.transcript || "";
+
+    console.log("USER:", text);
+
+    let reply;
+
+    // No time
+    if (/સમય નથી|પછી/.test(text)) {
+      reply = P.NO_TIME;
+      calls.delete(sid);
     }
-  });
 
-  const buffer = await audioResp.arrayBuffer();
-
-  const [stt] = await sttClient.recognize({
-    audio: { content: Buffer.from(buffer).toString("base64") },
-    config: {
-      languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"]
+    // Yes, continue
+    else if (state.step === "INTRO") {
+      reply = P.ASK_STATUS;
+      state.step = "ASK_STATUS";
     }
-  });
 
-  const text =
-    stt.results?.[0]?.alternatives?.[0]?.transcript || "";
+    // Work done
+    else if (/પૂર્ણ|થઈ ગયું/.test(text)) {
+      reply = P.DONE;
+      calls.delete(sid);
+    }
 
-  console.log("USER:", text);
+    // Work not done
+    else if (/બાકી|નથી થયું/.test(text)) {
+      reply = P.NOT_DONE;
+      state.step = "ASK_DETAILS";
+    }
 
-  let reply;
-  if (/થઈ|પૂર્ણ/.test(text)) reply = D.DONE;
-  else if (/નથી|બાકી/.test(text)) reply = D.NOT_DONE;
-  else reply = D.CALLBACK;
+    // Details provided
+    else if (state.step === "ASK_DETAILS" && text.length > 6) {
+      reply = P.DETAILS_SAVED;
+      calls.delete(sid);
+    }
 
-  const audio = await speak(reply, "reply.mp3");
+    // No details
+    else {
+      reply = P.NO_DETAILS;
+      calls.delete(sid);
+    }
 
-  res.type("text/xml").send(`
+    const audio = await speak(reply, "reply.mp3");
+
+    res.type("text/xml").send(`
+<Response>
+  <Play>${audio}</Play>
+  ${calls.has(sid) ? `<Record action="/listen" playBeep="false" timeout="4"/>` : `<Hangup/>`}
+</Response>
+    `);
+  } catch {
+    const audio = await speak(P.FALLBACK, "fallback.mp3");
+    res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
   <Hangup/>
 </Response>
-  `);
+    `);
+  }
 });
 
 /* ======================
    START
 ====================== */
 app.listen(process.env.PORT || 3000, () =>
-  console.log("✅ TRUE two-way AI conversation running")
+  console.log("✅ Prompt-faithful Gujarati AI Agent running")
 );
