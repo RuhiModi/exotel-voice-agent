@@ -1,6 +1,6 @@
 /*************************************************
- * STABLE FLOW-DRIVEN GUJARATI AI VOICE AGENT
- * Fixes self-talking, ignored speech & fallback
+ * FLOW-DRIVEN GUJARATI AI VOICE AGENT (DEMO READY)
+ * Two-way | ACK | No beep | Stable | Deterministic
  *************************************************/
 
 import express from "express";
@@ -18,7 +18,6 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const BASE_URL = process.env.BASE_URL;
 
 const app = express();
@@ -26,7 +25,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /* ======================
-   AUDIO DIR
+   AUDIO DIRECTORY
 ====================== */
 const AUDIO_DIR = path.join(__dirname, "audio");
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
@@ -48,7 +47,12 @@ const sttClient = new SpeechClient();
 const calls = new Map();
 
 /* ======================
-   FLOW (YOUR JSON)
+   ACK TEXT (INSTANT RESPONSE)
+====================== */
+const ACK_TEXT = "હા… સમજાયું.";
+
+/* ======================
+   FLOW (FROM YOUR JSON)
 ====================== */
 const FLOW = {
   intro: {
@@ -113,7 +117,7 @@ const FLOW = {
 };
 
 /* ======================
-   TTS (MALE GUJARATI)
+   TTS (GUJARATI MALE)
 ====================== */
 async function speak(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -171,12 +175,9 @@ app.post("/listen", async (req, res) => {
   const stateId = calls.get(sid);
   const state = FLOW[stateId];
 
-  /* ---- SAFETY: no speech captured ---- */
+  // No speech captured
   if (!req.body.RecordingUrl) {
-    const audio = await speak(
-      "બરાબર, કોઈ સમસ્યા નથી. અમે પછીથી સંપર્ક કરીશું.",
-      "noinput.mp3"
-    );
+    const audio = await speak(FLOW.end_no_time.prompt, "noinput.mp3");
     calls.delete(sid);
     return res.type("text/xml").send(`
 <Response>
@@ -215,13 +216,15 @@ app.post("/listen", async (req, res) => {
     const nextId = state.next ? state.next(text) : null;
     const next = FLOW[nextId] || FLOW.fallback;
 
-    const audio = await speak(next.prompt, `${nextId || "fallback"}.mp3`);
+    const ackUrl = await speak(ACK_TEXT, "ack.mp3");
+    const replyUrl = await speak(next.prompt, `${nextId || "fallback"}.mp3`);
 
     if (next.end) {
       calls.delete(sid);
       return res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Play>${ackUrl}</Play>
+  <Play>${replyUrl}</Play>
   <Hangup/>
 </Response>
       `);
@@ -231,7 +234,8 @@ app.post("/listen", async (req, res) => {
 
     res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Play>${ackUrl}</Play>
+  <Play>${replyUrl}</Play>
   <Record
     action="${BASE_URL}/listen"
     method="POST"
@@ -256,8 +260,9 @@ app.post("/listen", async (req, res) => {
 });
 
 /* ======================
-   START
+   START SERVER
 ====================== */
-app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ Stable Gujarati AI voice agent running");
+app.listen(process.env.PORT || 3000, async () => {
+  await speak(ACK_TEXT, "ack.mp3");
+  console.log("✅ Demo-ready Gujarati AI voice agent running");
 });
