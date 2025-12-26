@@ -1,6 +1,7 @@
 /*************************************************
- * HUMAN-LIKE TWILIO AI CALL AGENT (FINAL)
- * Gujarati-first | Hindi/English fallback | Groq LLM
+ * FINAL TRIAL-SAFE HUMAN-LIKE AI CALL AGENT
+ * Gujarati-first | Hindi/English fallback
+ * Twilio Trial Compatible | Groq LLM
  *************************************************/
 
 import express from "express";
@@ -25,14 +26,14 @@ const BASE_URL = process.env.BASE_URL;
 /* ======================
    LANGUAGE DETECTION
 ====================== */
-function detectReplyLanguage(text = "") {
+function detectLanguage(text = "") {
   if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
   if (/[a-zA-Z]/.test(text)) return "en-US";       // English
   return "gu-IN";                                  // Default Gujarati
 }
 
 /* ======================
-   GROQ LLM (SAFE PROMPT)
+   GROQ LLM
 ====================== */
 async function askGroq(userText) {
   const response = await fetch(
@@ -45,18 +46,18 @@ async function askGroq(userText) {
       },
       body: JSON.stringify({
         model: "llama3-8b-8192",
-        temperature: 0.2,
+        temperature: 0.25,
         messages: [
           {
             role: "system",
             content: `
-You are a polite government office assistant.
-Your job is to confirm whether the citizen's work from a government camp is completed.
-Speak briefly, naturally, and respectfully.
-If the user says they are busy, politely end the call.
-If work is completed, thank them and end.
+You are a polite Indian government office assistant.
+You are calling to confirm whether work from a government camp is completed.
+Speak naturally, briefly, and respectfully.
+If the citizen is busy, politely end the call.
+If work is done, thank them and end.
 If work is pending, ask briefly about the issue.
-Never sound robotic.
+Never repeat questions unnecessarily.
 `
           },
           {
@@ -76,10 +77,10 @@ Never sound robotic.
 }
 
 /* ======================
-   HEALTH
+   HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Human-like AI Calling Agent Running");
+  res.send("✅ Trial-safe AI Voice Agent Running");
 });
 
 /* ======================
@@ -97,13 +98,14 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — AI STARTS (GUJARATI)
+   ANSWER — AI SPEAKS FIRST
+   (DTMF + SPEECH REQUIRED FOR TRIAL)
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Gather
-    input="speech"
+    input="dtmf speech"
     bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
@@ -146,19 +148,19 @@ app.post("/process", async (req, res) => {
     `);
   }
 
-  let aiText;
+  let aiReply;
   try {
-    aiText = await askGroq(userText);
-  } catch {
-    aiText = "Thank you. We will contact you again later.";
+    aiReply = await askGroq(userText);
+  } catch (e) {
+    aiReply = "Thank you. We will contact you again later.";
   }
 
-  const replyLang = detectReplyLanguage(userText);
+  const replyLang = detectLanguage(userText);
 
   res.type("text/xml").send(`
 <Response>
   <Gather
-    input="speech"
+    input="dtmf speech"
     bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
@@ -168,7 +170,7 @@ app.post("/process", async (req, res) => {
     actionOnEmptyResult="true"
   >
     <Say voice="alice" language="${replyLang}">
-      ${aiText}
+      ${aiReply}
     </Say>
   </Gather>
 
@@ -181,8 +183,8 @@ app.post("/process", async (req, res) => {
 });
 
 /* ======================
-   START
+   START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Human-like Gujarati-first AI Agent READY");
+  console.log("🚀 FINAL TRIAL-SAFE AI AGENT READY");
 });
