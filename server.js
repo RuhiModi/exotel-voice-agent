@@ -1,6 +1,6 @@
 /*************************************************
- * TWILIO AI VOICE AGENT – GUJARATI FIRST (STABLE)
- * AI speaks first | Groq LLM | Human-like
+ * FINAL STABLE TWILIO AI AGENT (TRIAL SAFE)
+ * AI speaks first | Handles DTMF + Speech | Groq
  *************************************************/
 
 import express from "express";
@@ -23,15 +23,6 @@ const client = twilio(
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   LANGUAGE DETECTION
-====================== */
-function detectReplyLanguage(text = "") {
-  if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
-  if (/[a-zA-Z]/.test(text)) return "en-US";       // English
-  return "gu-IN";                                  // Gujarati fallback
-}
-
-/* ======================
    GROQ LLM
 ====================== */
 async function askGroq(userText) {
@@ -49,19 +40,10 @@ async function askGroq(userText) {
         messages: [
           {
             role: "system",
-            content: `
-You are a polite Indian government office assistant.
-Your job is to verify whether the citizen’s work from a government camp is completed.
-Be respectful, short, and natural.
-If the user is busy, politely end the call.
-If work is completed, thank them.
-If work is pending, ask briefly about the issue.
-`
+            content:
+              "You are a polite Indian government office assistant. Speak briefly and naturally."
           },
-          {
-            role: "user",
-            content: userText
-          }
+          { role: "user", content: userText }
         ]
       })
     }
@@ -78,7 +60,7 @@ If work is pending, ask briefly about the issue.
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Gujarati-first AI Voice Agent Running");
+  res.send("✅ FINAL STABLE AI AGENT RUNNING");
 });
 
 /* ======================
@@ -96,9 +78,94 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — AI SPEAKS FIRST (GUJARATI)
+   ANSWER — AI SPEAKS FIRST
 ====================== */
 app.post("/answer", (req, res) => {
+  res.type("text/xml").send(`
+<Response>
+  <Gather
+    input="dtmf speech"
+    bargeIn="true"
+    action="${BASE_URL}/process"
+    method="POST"
+    language="en-US"
+    timeout="6"
+    speechTimeout="auto"
+    enhanced="true"
+    actionOnEmptyResult="true"
+  >
+    <Say voice="alice" language="gu-IN">
+      નમસ્તે. હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ કાર્યાલય તરફથી બોલું છું.
+      યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ માટે આ કૉલ છે.
+      કૃપા કરીને હેલો કહી જવાબ આપશો.
+    </Say>
+  </Gather>
+
+  <Say language="en-US">
+    Sorry, we could not hear you. We will call again later.
+  </Say>
+  <Hangup/>
+</Response>
+  `);
+});
+
+/* ======================
+   PROCESS INPUT (DTMF OR SPEECH)
+====================== */
+app.post("/process", async (req, res) => {
+  const digits = req.body.Digits;
+  const speech = req.body.SpeechResult || "";
+
+  console.log("DIGITS:", digits);
+  console.log("SPEECH:", speech);
+
+  // If user only pressed a key (trial gate), re-prompt for speech
+  if (digits && !speech.trim()) {
+    return res.type("text/xml").send(`
+<Response>
+  <Gather
+    input="speech"
+    action="${BASE_URL}/process"
+    method="POST"
+    language="en-US"
+    timeout="6"
+    speechTimeout="auto"
+    enhanced="true"
+    actionOnEmptyResult="true"
+  >
+    <Say>
+      Thank you. Please say hello to continue.
+    </Say>
+  </Gather>
+
+  <Say>
+    We could not hear you. Goodbye.
+  </Say>
+  <Hangup/>
+</Response>
+    `);
+  }
+
+  // If no speech even after re-prompt
+  if (!speech.trim()) {
+    return res.type("text/xml").send(`
+<Response>
+  <Say>
+    Sorry, we could not understand you. We will contact you again.
+  </Say>
+  <Hangup/>
+</Response>
+    `);
+  }
+
+  // Normal AI response
+  let aiReply;
+  try {
+    aiReply = await askGroq(speech);
+  } catch {
+    aiReply = "Thank you. We will contact you again later.";
+  }
+
   res.type("text/xml").send(`
 <Response>
   <Gather
@@ -107,71 +174,16 @@ app.post("/answer", (req, res) => {
     action="${BASE_URL}/process"
     method="POST"
     language="en-US"
-    speechTimeout="3"
+    timeout="6"
+    speechTimeout="auto"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say voice="alice" language="gu-IN">
-      નમસ્તે. હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
-      યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ માટે આ કૉલ છે.
-      શું હું આપનો થોડો સમય લઈ શકું?
-    </Say>
+    <Say>${aiReply}</Say>
   </Gather>
 
-  <Say language="gu-IN">
-    માફ કરશો, અવાજ સ્પષ્ટ સાંભળાયો નથી. અમે પછીથી સંપર્ક કરીશું.
-  </Say>
-  <Hangup/>
-</Response>
-  `);
-});
-
-/* ======================
-   PROCESS USER SPEECH
-====================== */
-app.post("/process", async (req, res) => {
-  const userText = req.body.SpeechResult || "";
-  console.log("USER SAID:", userText);
-
-  if (!userText.trim()) {
-    return res.type("text/xml").send(`
-<Response>
-  <Say language="gu-IN">
-    બરાબર. અમે પછીથી ફરી સંપર્ક કરીશું. આભાર.
-  </Say>
-  <Hangup/>
-</Response>
-    `);
-  }
-
-  let aiReply;
-  try {
-    aiReply = await askGroq(userText);
-  } catch {
-    aiReply = "Thank you. We will contact you again later.";
-  }
-
-  const replyLang = detectReplyLanguage(userText);
-
-  res.type("text/xml").send(`
-<Response>
-  <Gather
-    input="speech"
-    bargeIn="true"
-    action="${BASE_URL}/process"
-    method="POST"
-    language="${replyLang === "hi-IN" ? "hi-IN" : "en-US"}"
-    speechTimeout="3"
-    enhanced="true"
-    actionOnEmptyResult="true"
-  >
-    <Say voice="alice" language="${replyLang}">
-      ${aiReply}
-    </Say>
-  </Gather>
-
-  <Say language="${replyLang}">
-    આભાર. અમે ફરી સંપર્ક કરીશું.
+  <Say>
+    Thank you for your time. Goodbye.
   </Say>
   <Hangup/>
 </Response>
@@ -182,5 +194,5 @@ app.post("/process", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Gujarati-first AI Agent READY");
+  console.log("🚀 FINAL STABLE AI AGENT READY");
 });
