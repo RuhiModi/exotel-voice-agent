@@ -1,6 +1,6 @@
 /*************************************************
- * FLOW-DRIVEN GUJARATI AI VOICE AGENT
- * Two-way | Deterministic | No confusion
+ * STABLE FLOW-DRIVEN GUJARATI AI VOICE AGENT
+ * Fixes self-talking, ignored speech & fallback
  *************************************************/
 
 import express from "express";
@@ -19,12 +19,14 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const BASE_URL = process.env.BASE_URL;
+
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /* ======================
-   AUDIO DIRECTORY
+   AUDIO DIR
 ====================== */
 const AUDIO_DIR = path.join(__dirname, "audio");
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
@@ -41,21 +43,21 @@ const ttsClient = new textToSpeech.TextToSpeechClient();
 const sttClient = new SpeechClient();
 
 /* ======================
-   CALL MEMORY
+   CALL STATE
 ====================== */
 const calls = new Map();
 
 /* ======================
-   FLOW (FROM YOUR JSON)
+   FLOW (YOUR JSON)
 ====================== */
 const FLOW = {
   intro: {
     prompt:
       "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
     next: (t) => {
-      if (/હા|ચાલે|લીધી શકો/.test(t)) return "task_check";
+      if (/હા|ચાલે|લઈ શકો/.test(t)) return "task_check";
       if (/સમય નથી|પછી/.test(t)) return "end_no_time";
-      return "fallback";
+      return null;
     }
   },
 
@@ -65,7 +67,7 @@ const FLOW = {
     next: (t) => {
       if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
       if (/બાકી|નથી થયું/.test(t)) return "task_pending";
-      return "fallback";
+      return null;
     }
   },
 
@@ -80,8 +82,8 @@ const FLOW = {
       "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો જેથી અમે યોગ્ય વિભાગ સુધી પહોંચાડી શકીએ.",
     next: (t) => {
       if (t.length > 6) return "problem_recorded";
-      if (/નથી આપી શકતો|હાલ નહીં/.test(t)) return "no_details";
-      return "fallback";
+      if (/હાલ નહીં|નથી આપી/.test(t)) return "no_details";
+      return null;
     }
   },
 
@@ -111,7 +113,7 @@ const FLOW = {
 };
 
 /* ======================
-   TTS (GUJARATI MALE)
+   TTS (MALE GUJARATI)
 ====================== */
 async function speak(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -123,7 +125,7 @@ async function speak(text, file) {
     });
     fs.writeFileSync(filePath, res.audioContent);
   }
-  return `${process.env.BASE_URL}/audio/${file}`;
+  return `${BASE_URL}/audio/${file}`;
 }
 
 /* ======================
@@ -133,26 +135,30 @@ app.post("/call", async (req, res) => {
   const call = await twilioClient.calls.create({
     to: req.body.to,
     from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${process.env.BASE_URL}/answer`,
+    url: `${BASE_URL}/answer`,
     method: "POST"
   });
   res.json({ success: true });
 });
 
 /* ======================
-   ANSWER (START FLOW)
+   ANSWER
 ====================== */
 app.post("/answer", async (req, res) => {
-  const sid = req.body.CallSid;
-  calls.set(sid, "intro");
-
+  calls.set(req.body.CallSid, "intro");
   const audio = await speak(FLOW.intro.prompt, "intro.mp3");
 
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Play>${process.env.BASE_URL}/audio/listen.mp3</Play>
-  <Record action="/listen" playBeep="false" timeout="4" trim="trim-silence"/>
+  <Record
+    action="${BASE_URL}/listen"
+    method="POST"
+    playBeep="false"
+    timeout="8"
+    maxLength="12"
+    trim="trim-silence"
+  />
 </Response>
   `);
 });
@@ -164,6 +170,21 @@ app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
   const stateId = calls.get(sid);
   const state = FLOW[stateId];
+
+  /* ---- SAFETY: no speech captured ---- */
+  if (!req.body.RecordingUrl) {
+    const audio = await speak(
+      "બરાબર, કોઈ સમસ્યા નથી. અમે પછીથી સંપર્ક કરીશું.",
+      "noinput.mp3"
+    );
+    calls.delete(sid);
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${audio}</Play>
+  <Hangup/>
+</Response>
+    `);
+  }
 
   try {
     const audioResp = await fetch(`${req.body.RecordingUrl}.wav`, {
@@ -192,9 +213,9 @@ app.post("/listen", async (req, res) => {
     console.log("USER:", text);
 
     const nextId = state.next ? state.next(text) : null;
-    const next = FLOW[nextId];
+    const next = FLOW[nextId] || FLOW.fallback;
 
-    const audio = await speak(next.prompt, `${nextId}.mp3`);
+    const audio = await speak(next.prompt, `${nextId || "fallback"}.mp3`);
 
     if (next.end) {
       calls.delete(sid);
@@ -211,12 +232,20 @@ app.post("/listen", async (req, res) => {
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Play>${process.env.BASE_URL}/audio/listen.mp3</Play>
-  <Record action="/listen" playBeep="false" timeout="4" trim="trim-silence"/>
+  <Record
+    action="${BASE_URL}/listen"
+    method="POST"
+    playBeep="false"
+    timeout="8"
+    maxLength="12"
+    trim="trim-silence"
+  />
 </Response>
     `);
-  } catch {
+  } catch (err) {
+    console.error("ERROR:", err);
     const audio = await speak(FLOW.fallback.prompt, "fallback.mp3");
+    calls.delete(sid);
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
@@ -229,7 +258,6 @@ app.post("/listen", async (req, res) => {
 /* ======================
    START
 ====================== */
-app.listen(process.env.PORT || 3000, async () => {
-  await speak("બરાબર, જણાવશો…", "listen.mp3");
-  console.log("✅ Flow-driven AI voice agent running");
+app.listen(process.env.PORT || 3000, () => {
+  console.log("✅ Stable Gujarati AI voice agent running");
 });
