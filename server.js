@@ -1,6 +1,6 @@
 /*************************************************
- * TWILIO REAL-TIME AI VOICE AGENT (UPGRADED)
- * No trial prompt | Barge-in | Groq LLM | Credit-safe
+ * TWILIO AI VOICE AGENT – GUJARATI FIRST (STABLE)
+ * AI speaks first | Groq LLM | Human-like
  *************************************************/
 
 import express from "express";
@@ -23,15 +23,16 @@ const client = twilio(
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   LANGUAGE DETECTION (BEST-EFFORT)
+   LANGUAGE DETECTION
 ====================== */
-function detectLanguage(text = "") {
+function detectReplyLanguage(text = "") {
   if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
-  return "en-US"; // Default English (most reliable)
+  if (/[a-zA-Z]/.test(text)) return "en-US";       // English
+  return "gu-IN";                                  // Gujarati fallback
 }
 
 /* ======================
-   GROQ LLM CALL (SAFE)
+   GROQ LLM
 ====================== */
 async function askGroq(userText) {
   const response = await fetch(
@@ -39,17 +40,23 @@ async function askGroq(userText) {
     {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: "llama3-8b-8192",
-        temperature: 0.3,
+        temperature: 0.25,
         messages: [
           {
             role: "system",
-            content:
-              "You are a polite government office assistant calling citizens to verify whether their work from a government camp is completed. Keep responses short and clear."
+            content: `
+You are a polite Indian government office assistant.
+Your job is to verify whether the citizen’s work from a government camp is completed.
+Be respectful, short, and natural.
+If the user is busy, politely end the call.
+If work is completed, thank them.
+If work is pending, ask briefly about the issue.
+`
           },
           {
             role: "user",
@@ -61,15 +68,17 @@ async function askGroq(userText) {
   );
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ||
-    "Thank you. We will contact you again later.";
+  return (
+    data.choices?.[0]?.message?.content ||
+    "Thank you. We will contact you again later."
+  );
 }
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Upgraded Twilio + Groq AI Voice Agent Running");
+  res.send("✅ Gujarati-first AI Voice Agent Running");
 });
 
 /* ======================
@@ -87,7 +96,7 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — AI SPEAKS FIRST
+   ANSWER — AI SPEAKS FIRST (GUJARATI)
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
@@ -102,15 +111,15 @@ app.post("/answer", (req, res) => {
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say voice="alice" language="en-US">
-      Hello. I am calling from the office of MLA Kaushik Jain.
-      This call is to verify whether your work from the government camp has been completed.
-      May I take a moment of your time?
+    <Say voice="alice" language="gu-IN">
+      નમસ્તે. હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું.
+      યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ માટે આ કૉલ છે.
+      શું હું આપનો થોડો સમય લઈ શકું?
     </Say>
   </Gather>
 
-  <Say>
-    Sorry, I could not hear you. We will call again later.
+  <Say language="gu-IN">
+    માફ કરશો, અવાજ સ્પષ્ટ સાંભળાયો નથી. અમે પછીથી સંપર્ક કરીશું.
   </Say>
   <Hangup/>
 </Response>
@@ -122,15 +131,13 @@ app.post("/answer", (req, res) => {
 ====================== */
 app.post("/process", async (req, res) => {
   const userText = req.body.SpeechResult || "";
-
   console.log("USER SAID:", userText);
 
-  // 🔐 Credit safety: empty or unclear speech
-  if (!userText || userText.trim() === "") {
+  if (!userText.trim()) {
     return res.type("text/xml").send(`
 <Response>
-  <Say>
-    Sorry, I could not understand clearly. We will contact you again later.
+  <Say language="gu-IN">
+    બરાબર. અમે પછીથી ફરી સંપર્ક કરીશું. આભાર.
   </Say>
   <Hangup/>
 </Response>
@@ -140,11 +147,11 @@ app.post("/process", async (req, res) => {
   let aiReply;
   try {
     aiReply = await askGroq(userText);
-  } catch (e) {
-    aiReply = "Thank you. We will follow up shortly.";
+  } catch {
+    aiReply = "Thank you. We will contact you again later.";
   }
 
-  const replyLang = detectLanguage(userText);
+  const replyLang = detectReplyLanguage(userText);
 
   res.type("text/xml").send(`
 <Response>
@@ -153,7 +160,7 @@ app.post("/process", async (req, res) => {
     bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
-    language="${replyLang}"
+    language="${replyLang === "hi-IN" ? "hi-IN" : "en-US"}"
     speechTimeout="3"
     enhanced="true"
     actionOnEmptyResult="true"
@@ -163,8 +170,8 @@ app.post("/process", async (req, res) => {
     </Say>
   </Gather>
 
-  <Say>
-    Thank you. We will contact you again later.
+  <Say language="${replyLang}">
+    આભાર. અમે ફરી સંપર્ક કરીશું.
   </Say>
   <Hangup/>
 </Response>
@@ -175,5 +182,5 @@ app.post("/process", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Upgraded Twilio + Groq AI Agent READY");
+  console.log("🚀 Gujarati-first AI Agent READY");
 });
