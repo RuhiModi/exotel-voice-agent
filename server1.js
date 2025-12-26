@@ -155,8 +155,8 @@ app.post("/answer", async (req, res) => {
     action="${BASE_URL}/listen"
     method="POST"
     playBeep="false"
-    timeout="8"
-    maxLength="12"
+    timeout="4"
+    maxLength="6"
     trim="trim-silence"
   />
 </Response>
