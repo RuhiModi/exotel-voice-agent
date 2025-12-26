@@ -1,6 +1,6 @@
 /*************************************************
- * FINAL STABLE TWILIO AI AGENT (TRIAL SAFE)
- * AI speaks first | Handles DTMF + Speech | Groq
+ * TWILIO TRIAL-SAFE AI VOICE AGENT (HINDI FIRST)
+ * DTMF → Speech → Groq LLM
  *************************************************/
 
 import express from "express";
@@ -25,7 +25,7 @@ const BASE_URL = process.env.BASE_URL;
 /* ======================
    GROQ LLM
 ====================== */
-async function askGroq(userText) {
+async function askGroq(text) {
   const response = await fetch(
     "https://api.groq.com/openai/v1/chat/completions",
     {
@@ -36,14 +36,14 @@ async function askGroq(userText) {
       },
       body: JSON.stringify({
         model: "llama3-8b-8192",
-        temperature: 0.25,
+        temperature: 0.3,
         messages: [
           {
             role: "system",
             content:
-              "You are a polite Indian government office assistant. Speak briefly and naturally."
+              "आप एक विनम्र सरकारी कार्यालय सहायक हैं। संक्षिप्त, स्पष्ट और स्वाभाविक उत्तर दें।"
           },
-          { role: "user", content: userText }
+          { role: "user", content: text }
         ]
       })
     }
@@ -52,7 +52,7 @@ async function askGroq(userText) {
   const data = await response.json();
   return (
     data.choices?.[0]?.message?.content ||
-    "Thank you. We will contact you again later."
+    "धन्यवाद। हम आपसे बाद में संपर्क करेंगे।"
   );
 }
 
@@ -60,7 +60,7 @@ async function askGroq(userText) {
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ FINAL STABLE AI AGENT RUNNING");
+  res.send("✅ Hindi-first Trial Safe AI Agent Running");
 });
 
 /* ======================
@@ -78,31 +78,46 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — AI SPEAKS FIRST
+   ANSWER — CLEAR TRIAL GATE
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
+  <Gather input="dtmf" action="${BASE_URL}/start" method="POST">
+    <Say>
+      कृपया आगे बढ़ने के लिए कोई भी कुंजी दबाएं।
+    </Say>
+  </Gather>
+  <Hangup/>
+</Response>
+  `);
+});
+
+/* ======================
+   START SPEECH (HINDI)
+====================== */
+app.post("/start", (req, res) => {
+  res.type("text/xml").send(`
+<Response>
   <Gather
-    input="dtmf speech"
-    bargeIn="true"
+    input="speech"
     action="${BASE_URL}/process"
     method="POST"
-    language="en-US"
+    language="hi-IN"
     timeout="6"
     speechTimeout="auto"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say voice="alice" language="gu-IN">
-      નમસ્તે. હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ કાર્યાલય તરફથી બોલું છું.
-      યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ માટે આ કૉલ છે.
-      કૃપા કરીને હેલો કહી જવાબ આપશો.
+    <Say voice="alice" language="hi-IN">
+      नमस्ते। मैं दरियापुर के विधायक कौशिक जैन के कार्यालय से बोल रहा हूँ।
+      यह कॉल सरकारी शिविर में हुए आपके काम की पुष्टि के लिए है।
+      कृपया हाँ या नहीं में उत्तर दें।
     </Say>
   </Gather>
 
-  <Say language="en-US">
-    Sorry, we could not hear you. We will call again later.
+  <Say>
+    हमें आपकी आवाज़ नहीं सुनाई दी। हम बाद में संपर्क करेंगे।
   </Say>
   <Hangup/>
 </Response>
@@ -110,80 +125,50 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   PROCESS INPUT (DTMF OR SPEECH)
+   PROCESS SPEECH
 ====================== */
 app.post("/process", async (req, res) => {
-  const digits = req.body.Digits;
   const speech = req.body.SpeechResult || "";
 
-  console.log("DIGITS:", digits);
-  console.log("SPEECH:", speech);
+  console.log("USER SAID:", speech);
 
-  // If user only pressed a key (trial gate), re-prompt for speech
-  if (digits && !speech.trim()) {
-    return res.type("text/xml").send(`
-<Response>
-  <Gather
-    input="speech"
-    action="${BASE_URL}/process"
-    method="POST"
-    language="en-US"
-    timeout="6"
-    speechTimeout="auto"
-    enhanced="true"
-    actionOnEmptyResult="true"
-  >
-    <Say>
-      Thank you. Please say hello to continue.
-    </Say>
-  </Gather>
-
-  <Say>
-    We could not hear you. Goodbye.
-  </Say>
-  <Hangup/>
-</Response>
-    `);
-  }
-
-  // If no speech even after re-prompt
   if (!speech.trim()) {
     return res.type("text/xml").send(`
 <Response>
   <Say>
-    Sorry, we could not understand you. We will contact you again.
+    हमें आपकी बात समझ नहीं आई। धन्यवाद।
   </Say>
   <Hangup/>
 </Response>
     `);
   }
 
-  // Normal AI response
   let aiReply;
   try {
     aiReply = await askGroq(speech);
   } catch {
-    aiReply = "Thank you. We will contact you again later.";
+    aiReply = "धन्यवाद। हम आपसे बाद में संपर्क करेंगे।";
   }
 
   res.type("text/xml").send(`
 <Response>
   <Gather
     input="speech"
-    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
-    language="en-US"
+    language="hi-IN"
     timeout="6"
     speechTimeout="auto"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say>${aiReply}</Say>
+    <Say voice="alice" language="hi-IN">
+      ${aiReply}
+    </Say>
   </Gather>
 
   <Say>
-    Thank you for your time. Goodbye.
+    आपका समय देने के लिए धन्यवाद। नमस्कार।
   </Say>
   <Hangup/>
 </Response>
@@ -194,5 +179,5 @@ app.post("/process", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 FINAL STABLE AI AGENT READY");
+  console.log("🚀 Hindi-first Trial Safe AI Agent READY");
 });
