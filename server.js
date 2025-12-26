@@ -1,6 +1,6 @@
 /*************************************************
- * TRIAL-SAFE TWILIO AI VOICE AGENT
- * USER SPEAKS FIRST | GROQ LLM | NO DISCONNECT
+ * TWILIO REAL-TIME AI VOICE AGENT (UPGRADED)
+ * No trial prompt | Barge-in | Groq LLM | Credit-safe
  *************************************************/
 
 import express from "express";
@@ -23,16 +23,15 @@ const client = twilio(
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   LANGUAGE DETECTION
+   LANGUAGE DETECTION (BEST-EFFORT)
 ====================== */
 function detectLanguage(text = "") {
-  if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
-  if (/[a-zA-Z]/.test(text)) return "en-US";
-  return "en-US";
+  if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
+  return "en-US"; // Default English (most reliable)
 }
 
 /* ======================
-   GROQ LLM
+   GROQ LLM CALL (SAFE)
 ====================== */
 async function askGroq(userText) {
   const response = await fetch(
@@ -40,7 +39,7 @@ async function askGroq(userText) {
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -49,13 +48,8 @@ async function askGroq(userText) {
         messages: [
           {
             role: "system",
-            content: `
-You are a polite Indian government office assistant.
-The user has called you.
-Confirm whether their work from a government camp is completed.
-Keep replies short and respectful.
-End the call politely when appropriate.
-`
+            content:
+              "You are a polite government office assistant calling citizens to verify whether their work from a government camp is completed. Keep responses short and clear."
           },
           {
             role: "user",
@@ -67,17 +61,15 @@ End the call politely when appropriate.
   );
 
   const data = await response.json();
-  return (
-    data.choices?.[0]?.message?.content ||
-    "Thank you. We will contact you again later."
-  );
+  return data.choices?.[0]?.message?.content ||
+    "Thank you. We will contact you again later.";
 }
 
 /* ======================
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ TRIAL SAFE AI AGENT RUNNING");
+  res.send("✅ Upgraded Twilio + Groq AI Voice Agent Running");
 });
 
 /* ======================
@@ -95,27 +87,30 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — USER SPEAKS FIRST
+   ANSWER — AI SPEAKS FIRST
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Gather
-    input="dtmf speech"
+    input="speech"
+    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
     language="en-US"
-    speechTimeout="5"
+    speechTimeout="3"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say>
-      Please say hello to continue.
+    <Say voice="alice" language="en-US">
+      Hello. I am calling from the office of MLA Kaushik Jain.
+      This call is to verify whether your work from the government camp has been completed.
+      May I take a moment of your time?
     </Say>
   </Gather>
 
   <Say>
-    We did not hear you. Goodbye.
+    Sorry, I could not hear you. We will call again later.
   </Say>
   <Hangup/>
 </Response>
@@ -127,24 +122,26 @@ app.post("/answer", (req, res) => {
 ====================== */
 app.post("/process", async (req, res) => {
   const userText = req.body.SpeechResult || "";
+
   console.log("USER SAID:", userText);
 
-  if (!userText.trim()) {
+  // 🔐 Credit safety: empty or unclear speech
+  if (!userText || userText.trim() === "") {
     return res.type("text/xml").send(`
 <Response>
   <Say>
-    Sorry, we could not understand you. Goodbye.
+    Sorry, I could not understand clearly. We will contact you again later.
   </Say>
   <Hangup/>
 </Response>
     `);
   }
 
-  let aiText;
+  let aiReply;
   try {
-    aiText = await askGroq(userText);
-  } catch {
-    aiText = "Thank you. We will contact you again later.";
+    aiReply = await askGroq(userText);
+  } catch (e) {
+    aiReply = "Thank you. We will follow up shortly.";
   }
 
   const replyLang = detectLanguage(userText);
@@ -152,21 +149,22 @@ app.post("/process", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Gather
-    input="dtmf speech"
+    input="speech"
+    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
     language="${replyLang}"
-    speechTimeout="5"
+    speechTimeout="3"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say language="${replyLang}">
-      ${aiText}
+    <Say voice="alice" language="${replyLang}">
+      ${aiReply}
     </Say>
   </Gather>
 
   <Say>
-    Thank you for your time. Goodbye.
+    Thank you. We will contact you again later.
   </Say>
   <Hangup/>
 </Response>
@@ -177,5 +175,5 @@ app.post("/process", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 TRIAL SAFE AI AGENT READY");
+  console.log("🚀 Upgraded Twilio + Groq AI Agent READY");
 });
