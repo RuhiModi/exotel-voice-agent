@@ -1,7 +1,6 @@
 /*************************************************
- * FINAL TRIAL-SAFE HUMAN-LIKE AI CALL AGENT
- * Gujarati-first | Hindi/English fallback
- * Twilio Trial Compatible | Groq LLM
+ * TRIAL-SAFE TWILIO AI VOICE AGENT
+ * USER SPEAKS FIRST | GROQ LLM | NO DISCONNECT
  *************************************************/
 
 import express from "express";
@@ -27,9 +26,9 @@ const BASE_URL = process.env.BASE_URL;
    LANGUAGE DETECTION
 ====================== */
 function detectLanguage(text = "") {
-  if (/[\u0900-\u097F]/.test(text)) return "hi-IN"; // Hindi
-  if (/[a-zA-Z]/.test(text)) return "en-US";       // English
-  return "gu-IN";                                  // Default Gujarati
+  if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
+  if (/[a-zA-Z]/.test(text)) return "en-US";
+  return "en-US";
 }
 
 /* ======================
@@ -46,18 +45,16 @@ async function askGroq(userText) {
       },
       body: JSON.stringify({
         model: "llama3-8b-8192",
-        temperature: 0.25,
+        temperature: 0.3,
         messages: [
           {
             role: "system",
             content: `
 You are a polite Indian government office assistant.
-You are calling to confirm whether work from a government camp is completed.
-Speak naturally, briefly, and respectfully.
-If the citizen is busy, politely end the call.
-If work is done, thank them and end.
-If work is pending, ask briefly about the issue.
-Never repeat questions unnecessarily.
+The user has called you.
+Confirm whether their work from a government camp is completed.
+Keep replies short and respectful.
+End the call politely when appropriate.
 `
           },
           {
@@ -80,7 +77,7 @@ Never repeat questions unnecessarily.
    HEALTH CHECK
 ====================== */
 app.get("/", (req, res) => {
-  res.send("✅ Trial-safe AI Voice Agent Running");
+  res.send("✅ TRIAL SAFE AI AGENT RUNNING");
 });
 
 /* ======================
@@ -98,31 +95,27 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER — AI SPEAKS FIRST
-   (DTMF + SPEECH REQUIRED FOR TRIAL)
+   ANSWER — USER SPEAKS FIRST
 ====================== */
 app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Gather
     input="dtmf speech"
-    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
     language="en-US"
-    speechTimeout="3"
+    speechTimeout="5"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say voice="alice" language="gu-IN">
-      નમસ્તે. હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ કાર્યાલય તરફથી બોલું છું.
-      યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં તેની પુષ્ટિ માટે કૉલ છે.
-      શું હું આપનો થોડો સમય લઈ શકું?
+    <Say>
+      Please say hello to continue.
     </Say>
   </Gather>
 
-  <Say language="gu-IN">
-    માફ કરશો, અવાજ સ્પષ્ટ સાંભળાયો નથી. અમે પછીથી સંપર્ક કરીશું.
+  <Say>
+    We did not hear you. Goodbye.
   </Say>
   <Hangup/>
 </Response>
@@ -136,23 +129,22 @@ app.post("/process", async (req, res) => {
   const userText = req.body.SpeechResult || "";
   console.log("USER SAID:", userText);
 
-  // Credit safety
-  if (!userText || userText.trim() === "") {
+  if (!userText.trim()) {
     return res.type("text/xml").send(`
 <Response>
-  <Say language="gu-IN">
-    બરાબર. અમે પછીથી ફરી સંપર્ક કરીશું. આભાર.
+  <Say>
+    Sorry, we could not understand you. Goodbye.
   </Say>
   <Hangup/>
 </Response>
     `);
   }
 
-  let aiReply;
+  let aiText;
   try {
-    aiReply = await askGroq(userText);
-  } catch (e) {
-    aiReply = "Thank you. We will contact you again later.";
+    aiText = await askGroq(userText);
+  } catch {
+    aiText = "Thank you. We will contact you again later.";
   }
 
   const replyLang = detectLanguage(userText);
@@ -161,21 +153,20 @@ app.post("/process", async (req, res) => {
 <Response>
   <Gather
     input="dtmf speech"
-    bargeIn="true"
     action="${BASE_URL}/process"
     method="POST"
-    language="${replyLang === "hi-IN" ? "hi-IN" : "en-US"}"
-    speechTimeout="3"
+    language="${replyLang}"
+    speechTimeout="5"
     enhanced="true"
     actionOnEmptyResult="true"
   >
-    <Say voice="alice" language="${replyLang}">
-      ${aiReply}
+    <Say language="${replyLang}">
+      ${aiText}
     </Say>
   </Gather>
 
-  <Say language="${replyLang}">
-    આભાર. અમે ફરી સંપર્ક કરીશું.
+  <Say>
+    Thank you for your time. Goodbye.
   </Say>
   <Hangup/>
 </Response>
@@ -186,5 +177,5 @@ app.post("/process", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 FINAL TRIAL-SAFE AI AGENT READY");
+  console.log("🚀 TRIAL SAFE AI AGENT READY");
 });
