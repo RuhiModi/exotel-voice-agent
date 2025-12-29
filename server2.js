@@ -122,6 +122,20 @@ const FLOW = {
 };
 
 /* ======================
+   Test file
+====================== */
+
+app.get("/test-sheet", async (req, res) => {
+  await logCall({
+    language: "test",
+    userText: "test message",
+    status: "TEST",
+    duration: 0
+  });
+  res.send("Sheet test done");
+});
+
+/* ======================
    TTS
 ====================== */
 async function speak(text, file) {
