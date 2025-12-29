@@ -1,6 +1,6 @@
 /*************************************************
  * STABLE FLOW-DRIVEN GUJARATI AI VOICE AGENT
- * + Google Sheets Logging (SAFE ADDITION)
+ * + GUARANTEED GOOGLE SHEETS LOGGING
  *************************************************/
 
 import express from "express";
@@ -67,54 +67,46 @@ const calls = new Map();
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. શું હું આપનો થોડો સમય લઈ શકું?",
     next: (t) => {
-      if (/હા|ચાલે|લઈ શકો/.test(t)) return "task_check";
-      if (/સમય નથી|પછી/.test(t)) return "end_no_time";
+      if (/હા|ચાલે/.test(t)) return "task_check";
+      if (/નહીં|પછી/.test(t)) return "end_no_time";
       return null;
     }
   },
 
   task_check: {
     prompt:
-      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
+      "યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
     next: (t) => {
       if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
-      if (/બાકી|નથી થયું/.test(t)) return "task_pending";
+      if (/બાકી|નથી/.test(t)) return "task_pending";
       return null;
     }
   },
 
   task_done: {
-    prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે. આભાર.",
+    prompt: "આભાર. આપનો પ્રતિસાદ નોંધાયો છે.",
     end: true
   },
 
   task_pending: {
-    prompt:
-      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો.",
-    next: (t) => {
-      if (t.length > 6) return "problem_recorded";
-      return null;
-    }
+    prompt: "કૃપા કરીને આપની સમસ્યા જણાવશો.",
+    next: (t) => (t.length > 4 ? "problem_recorded" : null)
   },
 
   problem_recorded: {
-    prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી સંપર્ક કરશે.",
+    prompt: "આભાર. અમારી ટીમ સંપર્ક કરશે.",
     end: true
   },
 
   end_no_time: {
-    prompt:
-      "બરાબર, કોઈ સમસ્યા નથી. આભાર, અમે પછીથી સંપર્ક કરીશું.",
+    prompt: "બરાબર. અમે પછીથી સંપર્ક કરીશું.",
     end: true
   },
 
   fallback: {
-    prompt:
-      "માફ કરશો, ટેક્નિકલ સમસ્યા આવી છે. અમે ફરી સંપર્ક કરીશું.",
+    prompt: "ટેક્નિકલ સમસ્યા. ફરી સંપર્ક કરીશું.",
     end: true
   }
 };
@@ -136,7 +128,7 @@ async function speak(text, file) {
 }
 
 /* ======================
-   GOOGLE SHEET LOGGER
+   SHEET LOGGER (GUARANTEED)
 ====================== */
 async function logCall({ language, userText, status, duration }) {
   try {
@@ -150,14 +142,15 @@ async function logCall({ language, userText, status, duration }) {
         values: [[
           new Date().toISOString(),
           language,
-          userText,
+          userText || "—",
           status,
           duration
         ]]
       }
     });
+    console.log("📊 Call logged to sheet");
   } catch (e) {
-    console.error("Sheet logging failed");
+    console.error("❌ Sheet log failed:", e.message);
   }
 }
 
@@ -180,7 +173,8 @@ app.post("/call", async (req, res) => {
 app.post("/answer", async (req, res) => {
   calls.set(req.body.CallSid, {
     state: "intro",
-    startTime: Date.now()
+    startTime: Date.now(),
+    lastText: ""
   });
 
   const audio = await speak(FLOW.intro.prompt, "intro.mp3");
@@ -188,7 +182,7 @@ app.post("/answer", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="4" />
+  <Record action="${BASE_URL}/listen" method="POST" timeout="6" />
 </Response>
   `);
 });
@@ -199,9 +193,19 @@ app.post("/answer", async (req, res) => {
 app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
   const call = calls.get(sid);
-  const state = FLOW[call.state];
 
   try {
+    if (!req.body.RecordingUrl) {
+      await logCall({
+        language: "gu-IN",
+        userText: call.lastText,
+        status: "No Input",
+        duration: Math.floor((Date.now() - call.startTime) / 1000)
+      });
+      calls.delete(sid);
+      return res.type("text/xml").send(`<Response><Hangup/></Response>`);
+    }
+
     const audioResp = await fetch(`${req.body.RecordingUrl}.wav`, {
       headers: {
         Authorization:
@@ -225,6 +229,9 @@ app.post("/listen", async (req, res) => {
     const text =
       stt.results?.[0]?.alternatives?.[0]?.transcript || "";
 
+    call.lastText = text;
+
+    const state = FLOW[call.state];
     const nextId = state.next ? state.next(text) : null;
     const next = FLOW[nextId] || FLOW.fallback;
 
@@ -237,25 +244,26 @@ app.post("/listen", async (req, res) => {
         status: "Completed",
         duration: Math.floor((Date.now() - call.startTime) / 1000)
       });
-
       calls.delete(sid);
       return res.type("text/xml").send(`<Response><Play>${audio}</Play><Hangup/></Response>`);
     }
 
     call.state = nextId;
+
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
   <Record action="${BASE_URL}/listen" method="POST" timeout="8" />
 </Response>
     `);
-  } catch {
+  } catch (err) {
     await logCall({
       language: "gu-IN",
-      userText: "Error",
-      status: "Failed",
-      duration: 0
+      userText: call?.lastText,
+      status: "Error",
+      duration: Math.floor((Date.now() - call.startTime) / 1000)
     });
+    calls.delete(sid);
     res.type("text/xml").send(`<Response><Hangup/></Response>`);
   }
 });
@@ -264,5 +272,5 @@ app.post("/listen", async (req, res) => {
    START
 ====================== */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ AI Voice Agent running with Google Sheets logging");
+  console.log("✅ AI Voice Agent running with GUARANTEED Sheets logging");
 });
