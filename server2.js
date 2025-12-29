@@ -1,6 +1,8 @@
 /*************************************************
  * STABLE FLOW-DRIVEN GUJARATI AI VOICE AGENT
- * + Google Sheets Logging (SAFE ADDITION)
+ * + Google Sheets Logging
+ * + No Beep
+ * + Outbound Call API
  *************************************************/
 
 import express from "express";
@@ -161,6 +163,31 @@ async function logCall({ language, userText, status, duration }) {
     console.error("❌ Sheet log failed:", e.message);
   }
 }
+
+/* ======================
+   OUTBOUND CALL API  ✅ FIX
+====================== */
+app.post("/call", async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    if (!to) {
+      return res.status(400).json({ error: "Phone number missing" });
+    }
+
+    await twilioClient.calls.create({
+      to,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/answer`,
+      method: "POST"
+    });
+
+    res.json({ success: true, message: "Call initiated" });
+  } catch (err) {
+    console.error("Call error:", err.message);
+    res.status(500).json({ error: "Call failed" });
+  }
+});
 
 /* ======================
    ANSWER
