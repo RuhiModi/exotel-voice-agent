@@ -156,23 +156,11 @@ async function logCall({ language, userText, status, duration }) {
         ]]
       }
     });
+    console.log("📊 Call logged to sheet");
   } catch (e) {
-    console.error("Sheet logging failed");
+    console.error("❌ Sheet log failed:", e.message);
   }
 }
-
-/* ======================
-   OUTBOUND CALL
-====================== */
-app.post("/call", async (req, res) => {
-  await twilioClient.calls.create({
-    to: req.body.to,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${BASE_URL}/answer`,
-    method: "POST"
-  });
-  res.json({ success: true });
-});
 
 /* ======================
    ANSWER
@@ -188,7 +176,12 @@ app.post("/answer", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="4" />
+  <Record
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="4"
+    playBeep="false"
+  />
 </Response>
   `);
 });
@@ -243,13 +236,19 @@ app.post("/listen", async (req, res) => {
     }
 
     call.state = nextId;
+
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="8" />
+  <Record
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="8"
+    playBeep="false"
+  />
 </Response>
     `);
-  } catch {
+  } catch (e) {
     await logCall({
       language: "gu-IN",
       userText: "Error",
