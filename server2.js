@@ -52,7 +52,9 @@ const sttClient = new SpeechClient();
 const sheets = google.sheets("v4");
 
 const auth = new google.auth.GoogleAuth({
-  keyFile: path.join(__dirname, "serviceAccount.json"),
+  credentials: JSON.parse(
+    fs.readFileSync("/etc/secrets/serviceAccount.json", "utf8")
+  ),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"]
 });
 
