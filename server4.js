@@ -1,6 +1,6 @@
 /*************************************************
  * GUJARATI AI VOICE AGENT (STABLE + LLM FALLBACK)
- * Twilio <Record> + Google STT + Groq (Intent only)
+ * Twilio <Record> + SpeechResult + Groq (Intent only)
  * Trial-safe | Demo-proven
  *************************************************/
 
@@ -13,7 +13,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import textToSpeech from "@google-cloud/text-to-speech";
-import { SpeechClient } from "@google-cloud/speech";
+// import { SpeechClient } from "@google-cloud/speech"; // ❌ NOT USED IN TRIAL
 
 dotenv.config();
 
@@ -25,7 +25,7 @@ const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   ✅ TWILIO REST CLIENT (FIX)
+   TWILIO REST CLIENT
 ====================== */
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -33,10 +33,9 @@ const client = twilio(
 );
 
 /* ======================
-   GOOGLE CLIENTS
+   GOOGLE TTS
 ====================== */
 const ttsClient = new textToSpeech.TextToSpeechClient();
-const sttClient = new SpeechClient();
 
 /* ======================
    AUDIO CACHE
@@ -53,7 +52,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const calls = new Map();
 
 /* ======================
-   FLOW (UNCHANGED – CLIENT APPROVED)
+   FLOW (CLIENT APPROVED)
 ====================== */
 const FLOW = {
   intro: {
@@ -118,25 +117,7 @@ async function speak(text, file) {
 }
 
 /* ======================
-   GOOGLE STT (BATCH)
-====================== */
-async function transcribe(recordingUrl) {
-  const [response] = await sttClient.recognize({
-    audio: { uri: recordingUrl },
-    config: {
-      encoding: "LINEAR16",
-      languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"]
-    }
-  });
-
-  return response.results
-    .map(r => r.alternatives[0].transcript)
-    .join(" ");
-}
-
-/* ======================
-   LLM INTENT FALLBACK (SAFE)
+   LLM INTENT FALLBACK
 ====================== */
 async function llmIntentFallback(text) {
   try {
@@ -168,7 +149,7 @@ async function llmIntentFallback(text) {
 }
 
 /* ======================
-   ANSWER (INBOUND)
+   ANSWER
 ====================== */
 app.post("/answer", async (req, res) => {
   const sid = req.body.CallSid;
@@ -179,20 +160,18 @@ app.post("/answer", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="6" playBeep="false"/>
+  <Record action="${BASE_URL}/listen" method="POST" timeout="8" playBeep="false"/>
 </Response>
 `);
 });
 
 /* ======================
-   OUTBOUND CALL (OPTIONAL)
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
 
-  if (!to) {
-    return res.status(400).json({ error: "Missing 'to' number" });
-  }
+  if (!to) return res.status(400).json({ error: "Missing 'to'" });
 
   try {
     const call = await client.calls.create({
@@ -201,32 +180,30 @@ app.post("/call", async (req, res) => {
       url: `${BASE_URL}/answer`,
       method: "POST"
     });
-
     res.json({ success: true, sid: call.sid });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
 /* ======================
-   LISTEN (CORE LOGIC)
+   LISTEN (FIXED)
 ====================== */
 app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
   const call = calls.get(sid);
-
   if (!call) {
     res.type("text/xml").send("<Response><Hangup/></Response>");
     return;
   }
 
-  const recordingUrl = req.body.RecordingUrl + ".wav";
-  const text = await transcribe(recordingUrl);
+  // ✅ USE TWILIO SPEECH RESULT (SAFE)
+  let text = req.body.SpeechResult || "";
 
   const state = FLOW[call.state];
   let nextId = state.next ? state.next(text) : null;
 
-  /* -------- LLM FALLBACK -------- */
+  // ✅ LLM fallback
   if (!nextId && text && text.length > 3) {
     const intent = await llmIntentFallback(text);
     if (intent === "task_done") nextId = "task_done";
@@ -237,15 +214,14 @@ app.post("/listen", async (req, res) => {
   const next = FLOW[nextId];
 
   if (!next) {
-    const retryAudio = await speak(
+    const retry = await speak(
       "માફ કરશો, કૃપા કરીને થોડું વધુ સ્પષ્ટ કહેશો?",
       "retry.mp3"
     );
-
     res.type("text/xml").send(`
 <Response>
-  <Play>${retryAudio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="6" playBeep="false"/>
+  <Play>${retry}</Play>
+  <Record action="${BASE_URL}/listen" method="POST" timeout="8" playBeep="false"/>
 </Response>
 `);
     return;
@@ -266,14 +242,14 @@ app.post("/listen", async (req, res) => {
     res.type("text/xml").send(`
 <Response>
   <Play>${audio}</Play>
-  <Record action="${BASE_URL}/listen" method="POST" timeout="6" playBeep="false"/>
+  <Record action="${BASE_URL}/listen" method="POST" timeout="8" playBeep="false"/>
 </Response>
 `);
   }
 });
 
 /* ======================
-   SERVER START
+   START
 ====================== */
 app.listen(PORT, () => {
   console.log("✅ Gujarati AI Voice Agent running (Stable + LLM fallback)");
