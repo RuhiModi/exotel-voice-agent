@@ -1,7 +1,8 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT (FINAL – CLEAN LOGGING)
- * Stable Twilio Gather + Gujarati
- * Separate Agent / User columns in Google Sheets
+ * GUJARATI AI VOICE AGENT (FINAL – ERROR FREE)
+ * Twilio Gather + Gujarati
+ * Single Google Sheet
+ * Agent_Text & User_Text in separate columns
  *************************************************/
 
 import express from "express";
@@ -31,7 +32,7 @@ const ttsClient = new textToSpeech.TextToSpeechClient();
    GOOGLE SHEETS
 ====================== */
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS),
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"]
 });
 const sheets = google.sheets({ version: "v4", auth });
@@ -43,6 +44,7 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const AUDIO_DIR = path.join(__dirname, "audio");
+
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
 app.use("/audio", express.static(AUDIO_DIR));
 
@@ -52,7 +54,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const calls = new Map();
 
 /* ======================
-   FLOW (YOUR WORDING)
+   FLOW (UNCHANGED)
 ====================== */
 const FLOW = {
   intro: {
@@ -117,7 +119,7 @@ async function generateAudio(text, file) {
 }
 
 /* ======================
-   PRELOAD
+   PRELOAD AUDIO
 ====================== */
 async function preloadAll() {
   for (const k in FLOW) {
@@ -128,10 +130,11 @@ async function preloadAll() {
 }
 
 /* ======================
-   SHEET LOGGER
+   GOOGLE SHEET LOGGER
+   (NO await inside routes)
 ====================== */
-async function logToSheet(call) {
-  await sheets.spreadsheets.values.append({
+function logToSheet(call) {
+  sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: "Call_Logs!A:G",
     valueInputOption: "USER_ENTERED",
@@ -146,13 +149,15 @@ async function logToSheet(call) {
         Math.floor((Date.now() - call.startTime) / 1000)
       ]]
     }
+  }).catch(err => {
+    console.error("Sheet log failed:", err.message);
   });
 }
 
 /* ======================
    ANSWER
 ====================== */
-app.post("/listen", async (req, res) => {
+app.post("/answer", (req, res) => {
   const sid = req.body.CallSid;
 
   calls.set(sid, {
@@ -166,6 +171,7 @@ app.post("/listen", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/intro.mp3</Play>
+  <Pause length="1"/>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen" method="POST"
     timeout="6" speechTimeout="auto"/>
@@ -174,11 +180,13 @@ app.post("/listen", async (req, res) => {
 });
 
 /* ======================
-   LISTEN
+   LISTEN (NO await used)
 ====================== */
 app.post("/listen", (req, res) => {
   const call = calls.get(req.body.CallSid);
-  if (!call) return res.type("text/xml").send("<Response><Hangup/></Response>");
+  if (!call) {
+    return res.type("text/xml").send("<Response><Hangup/></Response>");
+  }
 
   const text = (req.body.SpeechResult || "").trim();
 
@@ -213,7 +221,7 @@ app.post("/listen", (req, res) => {
   call.agentTexts.push(next.prompt);
 
   if (next.end) {
-    await logToSheet(call);
+    logToSheet(call);
     calls.delete(call.sid);
 
     return res.type("text/xml").send(`
@@ -236,9 +244,9 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   START
+   START SERVER
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent running (CLEAN LOGGING)");
+  console.log("✅ Gujarati AI Voice Agent running (ERROR FREE)");
 });
