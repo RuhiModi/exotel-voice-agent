@@ -176,6 +176,32 @@ app.post("/answer", async (req, res) => {
 `);
 });
 
+
+/* ======================
+   OUTBOUND CALL (OPTIONAL)
+====================== */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+
+  if (!to) {
+    return res.status(400).json({ error: "Missing 'to' number" });
+  }
+
+  try {
+    const call = await client.calls.create({
+      to,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/answer`,
+      method: "POST"
+    });
+
+    res.json({ success: true, sid: call.sid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 /* ======================
    LISTEN (CORE LOGIC)
 ====================== */
