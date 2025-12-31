@@ -198,7 +198,13 @@ app.post("/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Say language="gu-IN">${FLOW.intro.prompt}</Say>
-  <Gather input="speech" action="/listen" method="POST" timeout="2" />
+  <Gather
+  input="speech"
+  action="https://exotel-voice-agent.onrender.com/listen"
+  method="POST"
+  timeout="4"
+  speechTimeout="auto"
+/>
 </Response>
 `);
 });
@@ -220,7 +226,13 @@ app.post("/listen", async (req, res) => {
     res.type("text/xml").send(`
 <Response>
   <Say language="gu-IN">${ai.clarification}</Say>
-  <Gather input="speech" action="/listen" method="POST" timeout="2" />
+  <Gather
+  input="speech"
+  action="https://exotel-voice-agent.onrender.com/listen"
+  method="POST"
+  timeout="4"
+  speechTimeout="auto"
+/>
 </Response>
 `);
     return;
