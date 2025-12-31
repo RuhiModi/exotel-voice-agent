@@ -2,10 +2,11 @@
  * REAL-TIME GUJARATI AI VOICE AGENT (STREAMING)
  * DEFAULT MODE: Twilio Media Streams
  *
- * ✔ Google Streaming STT (gu-IN)
- * ✔ Same FLOW logic
+ * ✔ Google Streaming STT (Gujarati)
+ * ✔ FLOW-driven logic (primary)
+ * ✔ Groq LLM (fallback only: intent + clarification)
  * ✔ Google Sheets logging
- * ✔ Old Record-based code kept (commented)
+ * ✔ Old Record-based code KEPT (commented)
  *************************************************/
 
 import express from "express";
@@ -16,6 +17,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import WebSocket, { WebSocketServer } from "ws";
+import fetch from "node-fetch";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { SpeechClient } from "@google-cloud/speech";
 import { google } from "googleapis";
@@ -29,7 +31,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const BASE_URL = process.env.BASE_URL;
-const DOMAIN = process.env.DOMAIN; // example: your-app.onrender.com
+const DOMAIN = process.env.DOMAIN;
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -68,7 +70,7 @@ const auth = new google.auth.GoogleAuth({
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
 /* ======================
-   FLOW (UNCHANGED)
+   FLOW (PRIMARY LOGIC)
 ====================== */
 const FLOW = {
   intro: {
@@ -117,18 +119,18 @@ const FLOW = {
 
   fallback: {
     prompt:
-      "માફ કરશો, હાલમાં ટેક્નિકલ સમસ્યા છે. અમે ફરી સંપર્ક કરીશું.",
-    end: true
+      "માફ કરશો, કૃપા કરીને થોડું સ્પષ્ટ કહેશો?",
+    end: false
   }
 };
 
 /* ======================
-   CALL STATE (STREAMING)
+   CALL STATE
 ====================== */
 const calls = new Map();
 
 /* ======================
-   TTS (CACHED)
+   TTS
 ====================== */
 async function speak(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -144,7 +146,7 @@ async function speak(text, file) {
 }
 
 /* ======================
-   GOOGLE SHEETS LOGGER
+   GOOGLE SHEET LOGGER
 ====================== */
 async function logCall({ language, userText, status, duration }) {
   try {
@@ -170,7 +172,53 @@ async function logCall({ language, userText, status, duration }) {
 }
 
 /* ======================
-   OUTBOUND CALL (STREAM)
+   GROQ FALLBACK (INTENT + CLARIFICATION)
+====================== */
+async function groqFallback(userText) {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an intent classifier for a Gujarati voice assistant. Reply ONLY in JSON."
+          },
+          {
+            role: "user",
+            content: `
+User said: "${userText}"
+
+Choose intent from:
+task_done, task_pending, end_no_time, unknown
+
+Return JSON:
+{
+  "intent": "...",
+  "clarification": "Gujarati clarification sentence"
+}
+`
+          }
+        ],
+        temperature: 0
+      })
+    });
+
+    const data = await res.json();
+    return JSON.parse(data.choices[0].message.content);
+  } catch (e) {
+    return { intent: "unknown", clarification: "માફ કરશો, કૃપા કરીને ફરી કહેશો?" };
+  }
+}
+
+/* ======================
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
@@ -197,11 +245,11 @@ app.post("/answer-stream", async (req, res) => {
     startTime: Date.now()
   });
 
-  const introAudio = await speak(FLOW.intro.prompt, "intro.mp3");
+  const audio = await speak(FLOW.intro.prompt, "intro.mp3");
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${introAudio}</Play>
+  <Play>${audio}</Play>
   <Stream url="wss://${DOMAIN}/media?sid=${sid}" />
 </Response>
   `);
@@ -224,31 +272,36 @@ wss.on("connection", (ws, req) => {
       encoding: "MULAW",
       sampleRateHertz: 8000,
       languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"],
       enableAutomaticPunctuation: true
     },
     interimResults: true
   });
 
   recognizeStream.on("data", async (data) => {
-    const text =
-      data.results?.[0]?.alternatives?.[0]?.transcript;
-
+    const text = data.results?.[0]?.alternatives?.[0]?.transcript;
     if (!text || text.length < 3) return;
 
     const current = FLOW[call.state];
-    const nextId = current.next ? current.next(text) : null;
-    const next = FLOW[nextId] || FLOW.fallback;
+    let nextId = current.next ? current.next(text) : null;
 
-    const audio = await speak(
-      next.prompt,
-      `${nextId || "fallback"}.mp3`
-    );
+    // 🔹 FLOW FAILED → GROQ FALLBACK
+    if (!nextId) {
+      const ai = await groqFallback(text);
+      nextId = ai.intent !== "unknown" ? ai.intent : call.state;
 
-    ws.send(JSON.stringify({
-      event: "play",
-      audio
-    }));
+      const clarificationAudio = await speak(
+        ai.clarification,
+        `clarify-${Date.now()}.mp3`
+      );
+
+      ws.send(JSON.stringify({ event: "play", audio: clarificationAudio }));
+      return;
+    }
+
+    const next = FLOW[nextId];
+    const audio = await speak(next.prompt, `${nextId}.mp3`);
+
+    ws.send(JSON.stringify({ event: "play", audio }));
 
     if (next.end) {
       await logCall({
@@ -267,21 +320,18 @@ wss.on("connection", (ws, req) => {
   ws.on("message", (msg) => {
     const event = JSON.parse(msg.toString());
     if (event.event === "media") {
-      const audio = Buffer.from(event.media.payload, "base64");
-      recognizeStream.write(audio);
+      recognizeStream.write(Buffer.from(event.media.payload, "base64"));
     }
   });
 
-  ws.on("close", () => {
-    recognizeStream.end();
-  });
+  ws.on("close", () => recognizeStream.end());
 });
 
 /* ======================
-   HTTP + WS SERVER
+   SERVER START
 ====================== */
 const server = app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ Streaming AI Voice Agent running");
+  console.log("✅ Streaming AI Voice Agent running with Groq fallback");
 });
 
 server.on("upgrade", (req, socket, head) => {
@@ -289,22 +339,20 @@ server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
-  } else {
-    socket.destroy();
-  }
+  } else socket.destroy();
 });
 
 /* =====================================================
    SAFE MODE (RECORD + BATCH STT) – KEPT FOR FUTURE
-   This code is NOT deleted, only commented.
+   DO NOT DELETE
 ===================================================== */
 
 /*
 app.post("/answer", async (req, res) => {
-  // Old <Record> based safe flow
+  // Old <Record> based flow
 });
 
 app.post("/listen", async (req, res) => {
-  // Old Google recognize() batch STT
+  // Old Google recognize() STT
 });
 */
