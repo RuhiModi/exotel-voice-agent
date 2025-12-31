@@ -161,11 +161,12 @@ app.post("/answer", async (req, res) => {
   <Play>${audio}</Play>
   <Gather
     input="speech"
-    action="${BASE_URL}/listen"
+    language="gu-IN"
+    action="..."
     method="POST"
     timeout="6"
     speechTimeout="auto"
-  />
+/>
 </Response>
 `);
 });
