@@ -1,7 +1,7 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT (FINAL – FULL LOGGING)
+ * GUJARATI AI VOICE AGENT (FINAL – CLEAN LOGGING)
  * Stable Twilio Gather + Gujarati
- * Full conversation logging to Google Sheets
+ * Separate Agent / User columns in Google Sheets
  *************************************************/
 
 import express from "express";
@@ -31,7 +31,7 @@ const ttsClient = new textToSpeech.TextToSpeechClient();
    GOOGLE SHEETS
 ====================== */
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"]
 });
 const sheets = google.sheets({ version: "v4", auth });
@@ -52,7 +52,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const calls = new Map();
 
 /* ======================
-   FLOW (YOUR EXACT WORDING)
+   FLOW (YOUR WORDING)
 ====================== */
 const FLOW = {
   intro: {
@@ -117,7 +117,7 @@ async function generateAudio(text, file) {
 }
 
 /* ======================
-   PRELOAD AUDIO
+   PRELOAD
 ====================== */
 async function preloadAll() {
   for (const k in FLOW) {
@@ -128,30 +128,25 @@ async function preloadAll() {
 }
 
 /* ======================
-   GOOGLE SHEET LOGGER
+   SHEET LOGGER
 ====================== */
 async function logToSheet(call) {
-  try {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range: "Call_Logs!A:H",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[
-          new Date(call.startTime).toISOString(),
-          "gu-IN",
-          call.from,
-          call.sid,
-          call.transcript.join(" | "),
-          call.result,
-          "Completed",
-          Math.floor((Date.now() - call.startTime) / 1000)
-        ]]
-      }
-    });
-  } catch (e) {
-    console.error("Sheet error:", e.message);
-  }
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Call_Logs!A:G",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date(call.startTime).toISOString(),
+        call.sid,
+        "gu-IN",
+        call.agentTexts.join(" | "),
+        call.userTexts.join(" | "),
+        "Completed",
+        Math.floor((Date.now() - call.startTime) / 1000)
+      ]]
+    }
+  });
 }
 
 /* ======================
@@ -163,16 +158,14 @@ app.post("/answer", (req, res) => {
   calls.set(sid, {
     sid,
     state: "intro",
-    from: req.body.From,
-    transcript: ["AGENT: " + FLOW.intro.prompt],
     startTime: Date.now(),
-    result: ""
+    agentTexts: [FLOW.intro.prompt],
+    userTexts: []
   });
 
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/intro.mp3</Play>
-  <Pause length="1"/>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen" method="POST"
     timeout="6" speechTimeout="auto"/>
@@ -188,6 +181,7 @@ app.post("/listen", (req, res) => {
   if (!call) return res.type("text/xml").send("<Response><Hangup/></Response>");
 
   const text = (req.body.SpeechResult || "").trim();
+
   if (!text) {
     return res.type("text/xml").send(`
 <Response>
@@ -199,7 +193,7 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  call.transcript.push("USER: " + text);
+  call.userTexts.push(text);
 
   const current = FLOW[call.state];
   const nextId = current.next(text);
@@ -216,11 +210,10 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  call.transcript.push("AGENT: " + next.prompt);
+  call.agentTexts.push(next.prompt);
 
   if (next.end) {
-    call.result = nextId;
-    logToSheet(call);
+    await logToSheet(call);
     calls.delete(call.sid);
 
     return res.type("text/xml").send(`
@@ -247,5 +240,5 @@ app.post("/listen", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent running (FULL LOGGING ENABLED)");
+  console.log("✅ Gujarati AI Voice Agent running (CLEAN LOGGING)");
 });
