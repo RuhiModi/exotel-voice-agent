@@ -25,6 +25,14 @@ const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
+   ✅ TWILIO REST CLIENT (FIX)
+====================== */
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+/* ======================
    GOOGLE CLIENTS
 ====================== */
 const ttsClient = new textToSpeech.TextToSpeechClient();
@@ -160,7 +168,7 @@ async function llmIntentFallback(text) {
 }
 
 /* ======================
-   ANSWER
+   ANSWER (INBOUND)
 ====================== */
 app.post("/answer", async (req, res) => {
   const sid = req.body.CallSid;
@@ -175,7 +183,6 @@ app.post("/answer", async (req, res) => {
 </Response>
 `);
 });
-
 
 /* ======================
    OUTBOUND CALL (OPTIONAL)
@@ -200,7 +207,6 @@ app.post("/call", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 /* ======================
    LISTEN (CORE LOGIC)
@@ -228,7 +234,6 @@ app.post("/listen", async (req, res) => {
     else if (intent === "no_time") nextId = "end_no_time";
   }
 
-  /* -------- FINAL DECISION -------- */
   const next = FLOW[nextId];
 
   if (!next) {
@@ -273,4 +278,3 @@ app.post("/listen", async (req, res) => {
 app.listen(PORT, () => {
   console.log("✅ Gujarati AI Voice Agent running (Stable + LLM fallback)");
 });
-
