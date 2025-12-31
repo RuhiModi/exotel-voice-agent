@@ -169,6 +169,26 @@ Return JSON:
 }
 
 /* ======================
+   OUTBOUND CALL (OPTIONAL – SAFE MODE)
+====================== */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+  if (!to) {
+    return res.status(400).json({ error: "Missing 'to' number" });
+  }
+
+  await twilioClient.calls.create({
+    to,
+    from: process.env.TWILIO_PHONE_NUMBER,
+    url: `${BASE_URL}/answer`,
+    method: "POST"
+  });
+
+  res.json({ success: true });
+});
+
+
+/* ======================
    ANSWER (SAFE MODE START)
 ====================== */
 app.post("/answer", (req, res) => {
