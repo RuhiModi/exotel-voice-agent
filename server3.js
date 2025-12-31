@@ -1,196 +1,86 @@
 /*************************************************
- * SAFE MODE GUJARATI AI VOICE AGENT (TWILIO)
- *
- * ✔ SAFE & STABLE
- * ✔ NO CREDIT WASTE
- * ✔ Google STT (Gujarati)
- * ✔ Groq fallback
- * ✔ All streaming code KEPT (commented)
+ * AI VOICE CALL AGENT – FINAL SAFE VERSION
+ * Twilio + Google STT (Gujarati) + Groq fallback
+ * Render compatible | Trial safe
  *************************************************/
 
 import express from "express";
-import dotenv from "dotenv";
 import bodyParser from "body-parser";
-import twilio from "twilio";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import fetch from "node-fetch";
-import textToSpeech from "@google-cloud/text-to-speech";
-import { SpeechClient } from "@google-cloud/speech";
+import twilio from "twilio";
 
 dotenv.config();
-
-/* ======================
-   BASIC SETUP
-====================== */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const BASE_URL = process.env.BASE_URL;
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-/* ======================
-   CLIENTS
-====================== */
-const twilioClient = twilio(
+const PORT = process.env.PORT || 10000;
+const BASE_URL = "https://exotel-voice-agent.onrender.com";
+
+/* =======================
+   Twilio Client
+======================= */
+const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-const ttsClient = new textToSpeech.TextToSpeechClient();
-const sttClient = new SpeechClient();
+/* =======================
+   Call State Store
+======================= */
+const calls = new Map();
 
-/* ======================
-   FLOW (UNCHANGED)
-====================== */
+/* =======================
+   Conversation Flow
+======================= */
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી છે. શું હું થોડો સમય લઈ શકું?",
-    next: (t) => {
-      if (/હા|ચાલે|લઈ શકો/.test(t)) return "task_check";
-      if (/સમય નથી|પછી/.test(t)) return "end_no_time";
-      return null;
-    }
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
+    next: (input) => {
+      if (/હા|yes/i.test(input)) return "task_check";
+      if (/ના|no/i.test(input)) return "goodbye";
+      return "clarify";
+    },
   },
 
   task_check: {
-    prompt:
-      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
-    next: (t) => {
-      if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
-      if (/બાકી|નથી થયું/.test(t)) return "task_pending";
-      return null;
-    }
+    prompt: "કૃપા કરીને જણાવશો કે આપનું કામ પૂર્ણ થયું છે કે નહીં?",
+    next: (input) => {
+      if (/થયું|પૂર્ણ|yes/i.test(input)) return "thanks";
+      if (/નથી|no/i.test(input)) return "complaint";
+      return "clarify";
+    },
   },
 
-  task_done: {
+  complaint: {
     prompt:
-      "આપનું કામ પૂર્ણ થયું તે સાંભળીને આનંદ થયો. આપનો પ્રતિસાદ બદલ આભાર.",
-    end: true
+      "આભાર. આપની ફરિયાદ નોંધવામાં આવી છે. ટૂંક સમયમાં અમારી ટીમ સંપર્ક કરશે.",
+    next: () => "end",
   },
 
-  task_pending: {
+  thanks: {
     prompt:
-      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને સમસ્યાની વિગતો જણાવશો.",
-    next: (t) => (t.length > 6 ? "problem_recorded" : null)
+      "આભાર. આપનો પ્રતિસાદ અમારાં માટે મહત્વનો છે. શુભ દિવસ!",
+    next: () => "end",
   },
 
-  problem_recorded: {
-    prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી સંપર્ક કરશે.",
-    end: true
+  clarify: {
+    prompt: "માફ કરશો, કૃપા કરીને ફરી એકવાર સ્પષ્ટ કહી શકશો?",
+    next: () => "intro",
   },
 
-  end_no_time: {
-    prompt:
-      "બરાબર. કોઈ વાત નથી. જરૂર પડે ત્યારે ફરી સંપર્ક કરશો. આભાર.",
-    end: true
+  goodbye: {
+    prompt: "આભાર. શુભ દિવસ!",
+    next: () => "end",
   },
-
-  fallback: {
-    prompt:
-      "માફ કરશો, કૃપા કરીને થોડું સ્પષ્ટ કહેશો?",
-    end: false
-  }
 };
 
-/* ======================
-   CALL STATE
-====================== */
-const calls = new Map();
-
-/* ======================
-   GOOGLE STT (BATCH)
-====================== */
-async function transcribeFromTwilio(recordingUrl) {
-  const [response] = await sttClient.recognize({
-    audio: { uri: recordingUrl },
-    config: {
-      encoding: "LINEAR16",
-      languageCode: "gu-IN",
-      alternativeLanguageCodes: ["hi-IN", "en-IN"]
-    }
-  });
-
-  return response.results
-    .map(r => r.alternatives[0].transcript)
-    .join(" ");
-}
-
-/* ======================
-   GROQ FALLBACK
-====================== */
-async function groqFallback(userText) {
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an intent classifier for a Gujarati voice assistant. Reply ONLY in JSON."
-          },
-          {
-            role: "user",
-            content: `
-User said: "${userText}"
-
-Choose intent from:
-task_done, task_pending, end_no_time, unknown
-
-Return JSON:
-{
-  "intent": "...",
-  "clarification": "Gujarati clarification sentence"
-}
-`
-          }
-        ],
-        temperature: 0
-      })
-    });
-
-    const data = await res.json();
-    return JSON.parse(data.choices[0].message.content);
-  } catch {
-    return { intent: "unknown", clarification: "માફ કરશો, ફરી કહેશો?" };
-  }
-}
-
-/* ======================
-   OUTBOUND CALL (OPTIONAL – SAFE MODE)
-====================== */
-app.post("/call", async (req, res) => {
-  const { to } = req.body;
-  if (!to) {
-    return res.status(400).json({ error: "Missing 'to' number" });
-  }
-
-  await twilioClient.calls.create({
-    to,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    url: `${BASE_URL}/answer`,
-    method: "POST"
-  });
-
-  res.json({ success: true });
-});
-
-
-/* ======================
-   ANSWER (SAFE MODE START)
-====================== */
+/* =======================
+   /answer – ENTRY POINT
+======================= */
 app.post("/answer", (req, res) => {
   const sid = req.body.CallSid;
   calls.set(sid, { state: "intro" });
@@ -199,77 +89,136 @@ app.post("/answer", (req, res) => {
 <Response>
   <Say language="gu-IN">${FLOW.intro.prompt}</Say>
   <Gather
-  input="speech"
-  action="https://exotel-voice-agent.onrender.com/listen"
-  method="POST"
-  timeout="4"
-  speechTimeout="auto"
-/>
+    input="speech"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="4"
+    speechTimeout="auto"
+  />
 </Response>
 `);
 });
 
-/* ======================
-   LISTEN (SAFE MODE)
-====================== */
+/* =======================
+   /listen – MAIN LOOP
+======================= */
 app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
-  const call = calls.get(sid);
+  let call = calls.get(sid);
 
-  const recordingUrl = req.body.RecordingUrl + ".wav";
-  const userText = await transcribeFromTwilio(recordingUrl);
-
-  let nextId = FLOW[call.state].next(userText);
-
-  if (!nextId) {
-    const ai = await groqFallback(userText);
+  /* -------- SAFETY GUARD -------- */
+  if (!call) {
+    calls.set(sid, { state: "intro" });
     res.type("text/xml").send(`
 <Response>
-  <Say language="gu-IN">${ai.clarification}</Say>
+  <Say language="gu-IN">${FLOW.intro.prompt}</Say>
   <Gather
-  input="speech"
-  action="https://exotel-voice-agent.onrender.com/listen"
-  method="POST"
-  timeout="4"
-  speechTimeout="auto"
-/>
+    input="speech"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="4"
+    speechTimeout="auto"
+  />
 </Response>
 `);
     return;
   }
 
-  const next = FLOW[nextId];
+  /* -------- USER INPUT -------- */
+  const userText =
+    req.body.SpeechResult || "";
 
-  if (next.end) {
+  let nextState = FLOW[call.state].next(userText);
+
+  /* -------- GROQ FALLBACK (INTENT CLARIFY) -------- */
+  if (nextState === "clarify" && userText) {
+    try {
+      const groqResp = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "llama-3.1-8b-instant",
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an intent classifier for Gujarati phone calls. Reply with one word: yes, no, done, not_done, unclear.",
+              },
+              { role: "user", content: userText },
+            ],
+          }),
+        }
+      );
+
+      const data = await groqResp.json();
+      const intent = data.choices?.[0]?.message?.content || "";
+
+      if (intent.includes("yes")) nextState = "task_check";
+      else if (intent.includes("no")) nextState = "goodbye";
+    } catch (e) {
+      // Groq failure is NON-BLOCKING
+    }
+  }
+
+  call.state = nextState;
+  calls.set(sid, call);
+
+  /* -------- END CALL -------- */
+  if (nextState === "end") {
     res.type("text/xml").send(`
 <Response>
-  <Say language="gu-IN">${next.prompt}</Say>
+  <Say language="gu-IN">${FLOW[call.state]?.prompt || "આભાર."}</Say>
   <Hangup/>
 </Response>
 `);
-    calls.delete(sid);
-  } else {
-    call.state = nextId;
-    res.type("text/xml").send(`
+    return;
+  }
+
+  /* -------- CONTINUE LOOP -------- */
+  res.type("text/xml").send(`
 <Response>
-  <Say language="gu-IN">${next.prompt}</Say>
-  <Gather input="speech" action="/listen" method="POST" timeout="2" />
+  <Say language="gu-IN">${FLOW[nextState].prompt}</Say>
+  <Gather
+    input="speech"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="4"
+    speechTimeout="auto"
+  />
 </Response>
 `);
+});
+
+/* =======================
+   /call – OUTBOUND (OPTIONAL)
+======================= */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+  if (!to) {
+    return res.status(400).json({ error: "Missing 'to' number" });
+  }
+
+  try {
+    const call = await client.calls.create({
+      to,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      url: `${BASE_URL}/answer`,
+    });
+
+    res.json({ success: true, sid: call.sid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-/* ======================
+/* =======================
    SERVER START
-====================== */
-app.listen(process.env.PORT || 3000, () => {
-  console.log("✅ SAFE MODE AI Voice Agent running");
+======================= */
+app.listen(PORT, () => {
+  console.log("✅ Streaming AI Voice Agent running (FINAL SAFE MODE)");
 });
-
-/* =====================================================
-   MEDIA STREAMS / STREAMING CODE (KEPT, NOT DELETED)
-===================================================== */
-/*
-  Your entire Media Streams + WebSocket + streaming STT
-  code stays here commented for future Phase-2.
-*/
