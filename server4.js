@@ -152,7 +152,7 @@ async function logToSheet(call) {
 /* ======================
    ANSWER
 ====================== */
-app.post("/answer", (req, res) => {
+app.post("/listen", async (req, res) => {
   const sid = req.body.CallSid;
 
   calls.set(sid, {
