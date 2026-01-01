@@ -107,7 +107,7 @@ app.post("/answer", (req, res) => {
 
   res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi">
+  <Say voice="alice" language="gu-IN">
     ${FLOW.intro.prompt}
   </Say>
   <Gather input="speech"
@@ -136,7 +136,7 @@ app.post("/listen", async (req, res) => {
   if (!next) {
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi">
+  <Say voice="alice" language="gu-IN">
     માફ કરશો, ફરી એક વખત સ્પષ્ટ રીતે કહી શકશો?
   </Say>
   <Gather input="speech"
