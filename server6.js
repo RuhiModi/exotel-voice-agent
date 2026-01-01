@@ -1,6 +1,6 @@
 /*************************************************
  * FINAL STABLE GUJARATI AI VOICE AGENT
- * Twilio Voice + LLM + Human-like Flow
+ * Twilio Voice + LLM + Human Conversation
  *************************************************/
 
 import express from "express";
@@ -10,8 +10,6 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-/* ---------------- BASIC SETUP ---------------- */
-
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -20,32 +18,25 @@ const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
 /* ---------------- HEALTH CHECK ---------------- */
-
 app.get("/", (req, res) => {
-  res.status(200).send("AI Voice Agent OK");
+  res.send("AI Voice Agent OK");
 });
 
-/* ---------------- MEMORY ---------------- */
-
+/* ---------------- SESSION MEMORY ---------------- */
 const calls = new Map();
 
-/* ---------------- LLM CLASSIFIER ---------------- */
-
-async function classify(userText, mapping) {
-  if (!userText || userText.trim().length < 2) return null;
-
-  const labels = Object.keys(mapping);
+/* ---------------- LLM INTENT CLASSIFIER ---------------- */
+async function classify(text, mapping) {
+  if (!text || text.length < 2) return null;
 
   const prompt = `
-You are a Gujarati intent classifier.
+User said (Gujarati):
+"${text}"
 
-User said:
-"${userText}"
+Choose ONE intent:
+${Object.keys(mapping).join(", ")}
 
-Choose ONE intent from:
-${labels.join(", ")}
-
-Reply ONLY with intent label.
+Reply ONLY with intent name.
 `;
 
   try {
@@ -63,52 +54,43 @@ Reply ONLY with intent label.
     });
 
     const j = await r.json();
-    const label = j.choices?.[0]?.message?.content?.trim();
-    return mapping[label] || null;
-  } catch (e) {
-    console.error("LLM error:", e);
+    return mapping[j.choices?.[0]?.message?.content?.trim()] || null;
+  } catch {
     return null;
   }
 }
 
-/* ---------------- FLOW (HUMAN QUESTIONS) ---------------- */
-
+/* ---------------- HUMAN FLOW ---------------- */
 const FLOW = {
   intro: {
     prompt:
       "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ માટે કૉલ છે. શું હું આપનો થોડો સમય લઈ શકું?",
-    next: async (t) =>
-      await classify(t, {
-        yes: "task_check",
-        no: "end_no_time"
-      })
+    next: (t) =>
+      classify(t, { yes: "task_check", no: "end_no_time" })
   },
 
   task_check: {
     prompt:
       "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
-    next: async (t) =>
-      await classify(t, {
-        done: "task_done",
-        pending: "task_pending"
-      })
+    next: (t) =>
+      classify(t, { done: "task_done", pending: "task_pending" })
   },
 
   task_done: {
     prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ બદલ આભાર. કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.",
+      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ બદલ આભાર. કૌશિક જૈનનું ઇ-કાર્યાલય હંમેશાં આપની સાથે છે.",
     end: true
   },
 
   task_pending: {
     prompt:
       "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગત જણાવશો.",
-    next: (t) => (t && t.length > 5 ? "problem_recorded" : null)
+    next: (t) => (t.length > 5 ? "problem_recorded" : null)
   },
 
   problem_recorded: {
     prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી સંપર્ક કરશે.",
+      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી સંપર્ક કરશે.",
     end: true
   },
 
@@ -120,18 +102,15 @@ const FLOW = {
 };
 
 /* ---------------- TWILIO ENTRY ---------------- */
-
-app.post("/answer", async (req, res) => {
-  const callSid = req.body.CallSid;
-  calls.set(callSid, { state: "intro" });
+app.post("/answer", (req, res) => {
+  calls.set(req.body.CallSid, { state: "intro" });
 
   res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi" language="gu-IN">
+  <Say voice="Polly.Aditi">
     ${FLOW.intro.prompt}
   </Say>
   <Gather input="speech"
-          language="gu-IN"
           action="${BASE_URL}/listen"
           method="POST"
           speechTimeout="auto"
@@ -141,33 +120,25 @@ app.post("/answer", async (req, res) => {
 });
 
 /* ---------------- LISTEN ---------------- */
-
 app.post("/listen", async (req, res) => {
-  const callSid = req.body.CallSid;
-  const userSpeech = (req.body.SpeechResult || "").trim();
+  const session = calls.get(req.body.CallSid);
+  const userText = (req.body.SpeechResult || "").trim();
 
-  const session = calls.get(callSid);
   if (!session) {
     res.type("text/xml").send("<Response><Hangup/></Response>");
     return;
   }
 
-  const current = FLOW[session.state];
-  let nextState = null;
+  const node = FLOW[session.state];
+  const next = node.next ? await node.next(userText) : null;
 
-  if (current.next) {
-    nextState = await current.next(userSpeech);
-  }
-
-  // clarification
-  if (!nextState) {
+  if (!next) {
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi" language="gu-IN">
+  <Say voice="Polly.Aditi">
     માફ કરશો, ફરી એક વખત સ્પષ્ટ રીતે કહી શકશો?
   </Say>
   <Gather input="speech"
-          language="gu-IN"
           action="${BASE_URL}/listen"
           method="POST"
           speechTimeout="auto"
@@ -177,27 +148,22 @@ app.post("/listen", async (req, res) => {
     return;
   }
 
-  session.state = nextState;
-  const node = FLOW[nextState];
+  session.state = next;
+  const step = FLOW[next];
 
-  if (node.end) {
+  if (step.end) {
+    calls.delete(req.body.CallSid);
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi" language="gu-IN">
-    ${node.prompt}
-  </Say>
+  <Say voice="Polly.Aditi">${step.prompt}</Say>
   <Hangup/>
 </Response>
 `);
-    calls.delete(callSid);
   } else {
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi" language="gu-IN">
-    ${node.prompt}
-  </Say>
+  <Say voice="Polly.Aditi">${step.prompt}</Say>
   <Gather input="speech"
-          language="gu-IN"
           action="${BASE_URL}/listen"
           method="POST"
           speechTimeout="auto"
@@ -208,7 +174,6 @@ app.post("/listen", async (req, res) => {
 });
 
 /* ---------------- START ---------------- */
-
 app.listen(PORT, () => {
   console.log("✅ Gujarati AI Voice Agent running (FINAL CLEAN)");
 });
