@@ -15,15 +15,14 @@ import textToSpeech from "@google-cloud/text-to-speech";
 dotenv.config();
 
 
-app.get("/", (req, res) => {
-  res.status(200).send("AI Voice Agent OK");
-});
-
 /* -------------------- BASIC SETUP -------------------- */
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+app.get("/", (req, res) => {
+  res.status(200).send("AI Voice Agent OK");
+});
 
 const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
