@@ -14,6 +14,11 @@ import textToSpeech from "@google-cloud/text-to-speech";
 
 dotenv.config();
 
+
+app.get("/", (req, res) => {
+  res.status(200).send("AI Voice Agent OK");
+});
+
 /* -------------------- BASIC SETUP -------------------- */
 
 const app = express();
