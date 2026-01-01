@@ -1,6 +1,6 @@
 /*************************************************
- * FINAL STABLE GUJARATI AI VOICE AGENT
- * Twilio Voice + LLM + Human Conversation
+ * FINAL STABLE AI VOICE AGENT (TWILIO-SAFE)
+ * English Voice (TTS) + Gujarati STT + LLM Logic
  *************************************************/
 
 import express from "express";
@@ -33,17 +33,17 @@ async function classify(text, mapping) {
 User said (Gujarati):
 "${text}"
 
-Choose ONE intent:
+Choose ONE intent from this list:
 ${Object.keys(mapping).join(", ")}
 
-Reply ONLY with intent name.
+Reply with ONLY the intent name.
 `;
 
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -54,75 +54,89 @@ Reply ONLY with intent name.
     });
 
     const j = await r.json();
-    return mapping[j.choices?.[0]?.message?.content?.trim()] || null;
-  } catch {
+    const intent = j?.choices?.[0]?.message?.content?.trim();
+    return mapping[intent] || null;
+  } catch (e) {
     return null;
   }
 }
 
-/* ---------------- HUMAN FLOW ---------------- */
+/* ---------------- HUMAN CONVERSATION FLOW ---------------- */
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ માટે કૉલ છે. શું હું આપનો થોડો સમય લઈ શકું?",
+      "Hello. I am calling from the office of MLA Kaushik Jain. This call is to confirm whether your work from the government camp has been completed. May I take a moment of your time?",
     next: (t) =>
-      classify(t, { yes: "task_check", no: "end_no_time" })
+      classify(t, {
+        yes: "task_check",
+        okay: "task_check",
+        no: "end_no_time"
+      })
   },
 
   task_check: {
     prompt:
-      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
+      "Please tell me, has your work from the government camp been completed?",
     next: (t) =>
-      classify(t, { done: "task_done", pending: "task_pending" })
+      classify(t, {
+        done: "task_done",
+        completed: "task_done",
+        pending: "task_pending",
+        not_done: "task_pending"
+      })
   },
 
   task_done: {
     prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ બદલ આભાર. કૌશિક જૈનનું ઇ-કાર્યાલય હંમેશાં આપની સાથે છે.",
+      "Thank you for confirming. We are happy that your work is completed. Have a good day.",
     end: true
   },
 
   task_pending: {
     prompt:
-      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગત જણાવશો.",
+      "Sorry to hear that your work is still pending. Please briefly describe your problem.",
     next: (t) => (t.length > 5 ? "problem_recorded" : null)
   },
 
   problem_recorded: {
     prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી સંપર્ક કરશે.",
+      "Thank you. Your issue has been noted and our team will contact you soon.",
     end: true
   },
 
   end_no_time: {
     prompt:
-      "બરાબર, કોઈ સમસ્યા નથી. આપનો સમય બદલ આભાર.",
+      "No problem at all. Thank you for your time. Goodbye.",
     end: true
   }
 };
 
 /* ---------------- TWILIO ENTRY ---------------- */
 app.post("/answer", (req, res) => {
-  calls.set(req.body.CallSid, { state: "intro" });
+  const callSid = req.body.CallSid;
+  calls.set(callSid, { state: "intro" });
 
   res.type("text/xml").send(`
 <Response>
-  <Say voice="alice" language="gu-IN">
+  <Say voice="alice" language="en-IN">
     ${FLOW.intro.prompt}
   </Say>
-  <Gather input="speech"
-          action="${BASE_URL}/listen"
-          method="POST"
-          speechTimeout="auto"
-          timeout="6"
-          speechModel="phone_call"/>
+  <Gather
+    input="speech"
+    language="gu-IN"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="6"
+    speechTimeout="auto"
+  />
 </Response>
 `);
 });
 
 /* ---------------- LISTEN ---------------- */
 app.post("/listen", async (req, res) => {
-  const session = calls.get(req.body.CallSid);
+  const callSid = req.body.CallSid;
+  const session = calls.get(callSid);
   const userText = (req.body.SpeechResult || "").trim();
 
   if (!session) {
@@ -136,15 +150,17 @@ app.post("/listen", async (req, res) => {
   if (!next) {
     res.type("text/xml").send(`
 <Response>
-  <Say voice="alice" language="gu-IN">
-    માફ કરશો, ફરી એક વખત સ્પષ્ટ રીતે કહી શકશો?
+  <Say voice="alice" language="en-IN">
+    Sorry, could you please repeat that clearly?
   </Say>
-  <Gather input="speech"
-          action="${BASE_URL}/listen"
-          method="POST"
-          speechTimeout="auto"
-          timeout="6"
-          speechModel="phone_call"/>
+  <Gather
+    input="speech"
+    language="gu-IN"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="6"
+    speechTimeout="auto"
+  />
 </Response>
 `);
     return;
@@ -154,22 +170,29 @@ app.post("/listen", async (req, res) => {
   const step = FLOW[next];
 
   if (step.end) {
-    calls.delete(req.body.CallSid);
+    calls.delete(callSid);
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi">${step.prompt}</Say>
+  <Say voice="alice" language="en-IN">
+    ${step.prompt}
+  </Say>
   <Hangup/>
 </Response>
 `);
   } else {
     res.type("text/xml").send(`
 <Response>
-  <Say voice="Polly.Aditi">${step.prompt}</Say>
-  <Gather input="speech"
-          action="${BASE_URL}/listen"
-          method="POST"
-          speechTimeout="auto"
-          timeout="6"/>
+  <Say voice="alice" language="en-IN">
+    ${step.prompt}
+  </Say>
+  <Gather
+    input="speech"
+    language="gu-IN"
+    action="${BASE_URL}/listen"
+    method="POST"
+    timeout="6"
+    speechTimeout="auto"
+  />
 </Response>
 `);
   }
@@ -177,5 +200,5 @@ app.post("/listen", async (req, res) => {
 
 /* ---------------- START ---------------- */
 app.listen(PORT, () => {
-  console.log("✅ Gujarati AI Voice Agent running (FINAL CLEAN)");
+  console.log("✅ AI Voice Agent running (Twilio-safe, audio guaranteed)");
 });
