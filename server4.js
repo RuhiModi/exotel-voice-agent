@@ -1,6 +1,11 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – FINAL CLEAN
- * Human-like | LLM-driven | No IVR | Stable
+ * GUJARATI AI VOICE AGENT (FINAL – CLEAN LOGGING)
+ * Stable Twilio Gather + Gujarati
+ * Separate Agent / User columns in Google Sheets
+ * GUJARATI AI VOICE AGENT (FINAL – ERROR FREE)
+ * Twilio Gather + Gujarati
+ * Single Google Sheet
+ * Agent_Text & User_Text in separate columns
  *************************************************/
 
 import express from "express";
@@ -8,13 +13,11 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
-import fetch from "node-fetch";
 import { fileURLToPath } from "url";
 import textToSpeech from "@google-cloud/text-to-speech";
+import { google } from "googleapis";
 
 dotenv.config();
-
-/* -------------------- BASIC SETUP -------------------- */
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -22,229 +25,243 @@ app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-if (!BASE_URL) {
-  console.error("❌ BASE_URL missing");
-  process.exit(1);
-}
-if (!GROQ_API_KEY) {
-  console.error("❌ GROQ_API_KEY missing");
-  process.exit(1);
-}
-
-/* -------------------- PATHS -------------------- */
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const AUDIO_DIR = path.join(__dirname, "audio");
-if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
-
-app.use("/audio", express.static(AUDIO_DIR));
-
-/* -------------------- TTS -------------------- */
-
+/* ======================
+   GOOGLE TTS
+====================== */
 const ttsClient = new textToSpeech.TextToSpeechClient();
 
-async function speak(text, fileName) {
-  const filePath = path.join(AUDIO_DIR, fileName);
+/* ======================
+   GOOGLE SHEETS
+====================== */
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS),
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+});
+const sheets = google.sheets({ version: "v4", auth });
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-  if (!fs.existsSync(filePath)) {
-    const [res] = await ttsClient.synthesizeSpeech({
-      input: { text },
-      voice: {
-        languageCode: "gu-IN",
-        name: "gu-IN-Standard-A"
-      },
-      audioConfig: { audioEncoding: "MP3" }
-    });
-    fs.writeFileSync(filePath, res.audioContent);
-  }
+/* ======================
+   FILE SYSTEM
+====================== */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const AUDIO_DIR = path.join(__dirname, "audio");
 
-  return `${BASE_URL}/audio/${fileName}`;
-}
+if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
+app.use("/audio", express.static(AUDIO_DIR));
 
-/* -------------------- MEMORY -------------------- */
-
+/* ======================
+   CALL MEMORY
+====================== */
 const calls = new Map();
 
-/* -------------------- CONVERSATION FLOW -------------------- */
-
+/* ======================
+   FLOW (YOUR WORDING)
+   FLOW (UNCHANGED)
+====================== */
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી છે. શું હું આપનો થોડો સમય લઈ શકું?",
-    next: async (user) => await classify(user, {
-      yes: "task_check",
-      no: "end_no_time"
-    })
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
+    next: (t) => {
+      if (/હા|ચાલે|લઈ શકો/.test(t)) return "task_check";
+      if (/સમય નથી|પછી/.test(t)) return "end_no_time";
+      return null;
+    }
   },
 
   task_check: {
     prompt:
       "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
-    next: async (user) => await classify(user, {
-      done: "task_done",
-      pending: "task_pending"
-    })
+    next: (t) => {
+      if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
+      if (/બાકી|નથી થયું/.test(t)) return "task_pending";
+      return null;
+    }
   },
 
   task_done: {
     prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે. આભાર.",
+      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે. આભાર. દરિયાપુરના ધારાસભ્ય કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.",
     end: true
   },
 
   task_pending: {
     prompt:
-      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો થોડું સમજાવશો.",
-    next: async (user) => (user.length > 4 ? "problem_recorded" : null)
+      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો જેથી અમે યોગ્ય વિભાગ સુધી પહોંચાડી શકીએ.",
+    next: (t) => (t.length > 6 ? "problem_recorded" : null)
   },
 
   problem_recorded: {
     prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી જ આપનો સંપર્ક કરશે.",
+      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી જ સંપર્ક કરશે.",
     end: true
   },
 
   end_no_time: {
     prompt:
-      "બરાબર, કોઈ વાત નથી. તમે ઈચ્છો તો પછીથી અમારી ઇ-કાર્યાલય હેલ્પલાઈન પર સંપર્ક કરી શકો છો. આભાર.",
+      "બરાબર. કોઈ વાત નથી. જો આપ ઈચ્છો તો પછીથી અમારી ઇ-કાર્યાલય હેલ્પલાઈન પર સંપર્ક કરી શકો છો. આભાર.",
     end: true
   }
 };
 
-/* -------------------- LLM INTENT CLASSIFIER -------------------- */
+/* ======================
+   TTS CACHE
+====================== */
+async function generateAudio(text, file) {
+  const filePath = path.join(AUDIO_DIR, file);
+  if (fs.existsSync(filePath)) return;
 
-async function classify(userText, mapping) {
-  const labels = Object.keys(mapping).join(", ");
+  const [res] = await ttsClient.synthesizeSpeech({
+    input: { text },
+    voice: { languageCode: "gu-IN" },
+    audioConfig: { audioEncoding: "MP3" }
+  });
 
-  const prompt = `
-User said (Gujarati):
-"${userText}"
-
-Decide best intent from:
-${labels}
-
-Respond ONLY with intent word.
-`;
-
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0
-      })
-    });
-
-    const j = await r.json();
-    const intent = j.choices?.[0]?.message?.content?.trim();
-
-    return mapping[intent] || null;
-  } catch (e) {
-    console.error("LLM error:", e);
-    return null;
-  }
+  fs.writeFileSync(filePath, res.audioContent);
 }
 
-/* -------------------- TWILIO ENTRY -------------------- */
+/* ======================
+   PRELOAD
+   PRELOAD AUDIO
+====================== */
+async function preloadAll() {
+  for (const k in FLOW) {
+    await generateAudio(FLOW[k].prompt, `${k}.mp3`);
+  }
+  await generateAudio("કૃપા કરીને ફરીથી કહેશો?", "retry.mp3");
+  await generateAudio("કૃપા કરીને થોડું વધુ સ્પષ્ટ કહેશો?", "retry2.mp3");
+}
 
-app.post("/answer", async (req, res) => {
-  const callSid = req.body.CallSid;
-  calls.set(callSid, { state: "intro" });
+/* ======================
+   SHEET LOGGER
+   GOOGLE SHEET LOGGER
+   (NO await inside routes)
+====================== */
+async function logToSheet(call) {
+  await sheets.spreadsheets.values.append({
+function logToSheet(call) {
+  sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Call_Logs!A:G",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date(call.startTime).toISOString(),
+        call.sid,
+        "gu-IN",
+        call.agentTexts.join(" | "),
+        call.userTexts.join(" | "),
+        "Completed",
+        Math.floor((Date.now() - call.startTime) / 1000)
+      ]]
+    }
+  }).catch(err => {
+    console.error("Sheet log failed:", err.message);
+  });
+}
 
-  const audio = await speak(FLOW.intro.prompt, "intro.mp3");
+/* ======================
+   ANSWER
+====================== */
+app.post("/listen", async (req, res) => {
+app.post("/answer", (req, res) => {
+  const sid = req.body.CallSid;
+
+  calls.set(sid, {
+    sid,
+    state: "intro",
+    startTime: Date.now(),
+    agentTexts: [FLOW.intro.prompt],
+    userTexts: []
+  });
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
-  <Gather
-    input="speech"
-    language="gu-IN"
-    action="${BASE_URL}/listen"
-    method="POST"
-    speechTimeout="auto"
-    timeout="6"
-  />
+  <Play>${BASE_URL}/audio/intro.mp3</Play>
+  <Pause length="1"/>
+  <Gather input="speech" language="gu-IN"
+    action="${BASE_URL}/listen" method="POST"
+    timeout="6" speechTimeout="auto"/>
 </Response>
 `);
 });
 
-/* -------------------- USER RESPONSE -------------------- */
-
-app.post("/listen", async (req, res) => {
-  const callSid = req.body.CallSid;
-  const call = calls.get(callSid);
-
+/* ======================
+   LISTEN
+   LISTEN (NO await used)
+====================== */
+app.post("/listen", (req, res) => {
+  const call = calls.get(req.body.CallSid);
+  if (!call) return res.type("text/xml").send("<Response><Hangup/></Response>");
   if (!call) {
-    res.type("text/xml").send("<Response><Hangup/></Response>");
-    return;
+    return res.type("text/xml").send("<Response><Hangup/></Response>");
   }
 
-  const userText = (req.body.SpeechResult || "").trim();
+  const text = (req.body.SpeechResult || "").trim();
 
-  if (!userText) {
-    const retry = await speak("કૃપા કરીને ફરી કહેશો?", "retry.mp3");
-    res.type("text/xml").send(`
+  if (!text) {
+    return res.type("text/xml").send(`
 <Response>
-  <Play>${retry}</Play>
+  <Play>${BASE_URL}/audio/retry.mp3</Play>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen" method="POST"
-    speechTimeout="auto" timeout="6"/>
+    timeout="6" speechTimeout="auto"/>
 </Response>
 `);
-    return;
   }
 
-  const state = FLOW[call.state];
-  const nextState = state.next ? await state.next(userText) : null;
+  call.userTexts.push(text);
 
-  if (!nextState || !FLOW[nextState]) {
-    const retry = await speak("થોડું વધુ સ્પષ્ટ કહેશો?", "clarify.mp3");
-    res.type("text/xml").send(`
+  const current = FLOW[call.state];
+  const nextId = current.next(text);
+  const next = FLOW[nextId];
+
+  if (!next) {
+    return res.type("text/xml").send(`
 <Response>
-  <Play>${retry}</Play>
+  <Play>${BASE_URL}/audio/retry2.mp3</Play>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen" method="POST"
-    speechTimeout="auto" timeout="6"/>
+    timeout="6" speechTimeout="auto"/>
 </Response>
 `);
-    return;
   }
 
-  const next = FLOW[nextState];
-  const audio = await speak(next.prompt, `${nextState}.mp3`);
+  call.agentTexts.push(next.prompt);
 
   if (next.end) {
-    calls.delete(callSid);
-    res.type("text/xml").send(`
+    await logToSheet(call);
+    logToSheet(call);
+    calls.delete(call.sid);
+
+    return res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Play>${BASE_URL}/audio/${nextId}.mp3</Play>
   <Hangup/>
 </Response>
 `);
-  } else {
-    call.state = nextState;
-    res.type("text/xml").send(`
+  }
+
+  call.state = nextId;
+  res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Play>${BASE_URL}/audio/${nextId}.mp3</Play>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen" method="POST"
-    speechTimeout="auto" timeout="6"/>
+    timeout="6" speechTimeout="auto"/>
 </Response>
 `);
-  }
 });
 
-/* -------------------- START -------------------- */
-
-app.listen(PORT, () => {
-  console.log("✅ Gujarati AI Voice Agent running (FINAL CLEAN)");
+/* ======================
+   START
+   START SERVER
+====================== */
+app.listen(PORT, async () => {
+  await preloadAll();
+  console.log("✅ Gujarati AI Voice Agent running (CLEAN LOGGING)");
+  console.log("✅ Gujarati AI Voice Agent running (ERROR FREE)");
 });
