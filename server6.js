@@ -1,19 +1,16 @@
 /*************************************************
- * FINAL CLEAN GUJARATI AI VOICE AGENT (STABLE)
- * Twilio Voice + LLM + Human Flow
+ * FINAL STABLE GUJARATI AI VOICE AGENT
+ * Twilio Voice + LLM + Human-like Flow
  *************************************************/
 
 import express from "express";
 import bodyParser from "body-parser";
-import fs from "fs";
-import path from "path";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
-import twilio from "twilio";
+import fetch from "node-fetch";
 
 dotenv.config();
 
-/* -------------------- BASIC SETUP -------------------- */
+/* ---------------- BASIC SETUP ---------------- */
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -22,36 +19,33 @@ app.use(bodyParser.json());
 const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
-/* -------------------- HEALTH CHECK -------------------- */
+/* ---------------- HEALTH CHECK ---------------- */
 
 app.get("/", (req, res) => {
   res.status(200).send("AI Voice Agent OK");
 });
 
-/* -------------------- AUDIO SETUP -------------------- */
-
-const AUDIO_DIR = path.join(process.cwd(), "audio");
-if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
-
-app.use("/audio", express.static(AUDIO_DIR));
-
-/* -------------------- MEMORY -------------------- */
+/* ---------------- MEMORY ---------------- */
 
 const calls = new Map();
 
-/* -------------------- LLM HELPER -------------------- */
+/* ---------------- LLM CLASSIFIER ---------------- */
 
 async function classify(userText, mapping) {
+  if (!userText || userText.trim().length < 2) return null;
+
   const labels = Object.keys(mapping);
 
   const prompt = `
 You are a Gujarati intent classifier.
-User said: "${userText}"
 
-Choose ONE from:
+User said:
+"${userText}"
+
+Choose ONE intent from:
 ${labels.join(", ")}
 
-Reply with only the label.
+Reply ONLY with intent label.
 `;
 
   try {
@@ -77,28 +71,12 @@ Reply with only the label.
   }
 }
 
-/* -------------------- TTS (TWILIO TTS SAFE) -------------------- */
-
-async function speak(text, filename) {
-  const filePath = path.join(AUDIO_DIR, filename);
-
-  // Twilio-compatible Polly voice
-  const twiml = `
-<Response>
-  <Say language="gu-IN" voice="Polly.Aditi">${text}</Say>
-</Response>
-`;
-
-  fs.writeFileSync(filePath, Buffer.from(twiml));
-  return `${BASE_URL}/audio/${filename}`;
-}
-
-/* -------------------- FLOW (UNCHANGED) -------------------- */
+/* ---------------- FLOW (HUMAN QUESTIONS) ---------------- */
 
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. આ કૉલનો મુખ્ય હેતુ છે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ કરવી. શું હું આપનો થોડો સમય લઈ શકું?",
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ માટે કૉલ છે. શું હું આપનો થોડો સમય લઈ શકું?",
     next: async (t) =>
       await classify(t, {
         yes: "task_check",
@@ -118,40 +96,40 @@ const FLOW = {
 
   task_done: {
     prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ પૂર્ણ થયું છે. આપનો પ્રતિસાદ બદલ આભાર. કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.",
+      "ખૂબ આનંદ થયો કે આપનું કામ સફળતાપૂર્વક પૂર્ણ થયું છે. આપનો પ્રતિસાદ બદલ આભાર. કૌશિક જૈનનું ઇ-કાર્યાલય આપની સેવા માટે હંમેશાં તૈયાર છે.",
     end: true
   },
 
   task_pending: {
     prompt:
-      "માફ કરશો કે આપનું કામ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગત જણાવશો.",
-    next: (t) => (t.length > 5 ? "problem_recorded" : null)
+      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગત જણાવશો.",
+    next: (t) => (t && t.length > 5 ? "problem_recorded" : null)
   },
 
   problem_recorded: {
     prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ આપની સાથે જલદી સંપર્ક કરશે.",
+      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ આપની સમસ્યાના નિરાકરણ માટે જલદી સંપર્ક કરશે.",
     end: true
   },
 
   end_no_time: {
     prompt:
-      "બરાબર. કોઈ વાત નથી. આપનો સમય બદલ આભાર.",
+      "બરાબર, કોઈ સમસ્યા નથી. આપનો સમય બદલ આભાર.",
     end: true
   }
 };
 
-/* -------------------- TWILIO ENTRY -------------------- */
+/* ---------------- TWILIO ENTRY ---------------- */
 
 app.post("/answer", async (req, res) => {
   const callSid = req.body.CallSid;
   calls.set(callSid, { state: "intro" });
 
-  const audio = await speak(FLOW.intro.prompt, "intro.xml");
-
   res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Say voice="Polly.Aditi" language="gu-IN">
+    ${FLOW.intro.prompt}
+  </Say>
   <Gather input="speech"
           language="gu-IN"
           action="${BASE_URL}/listen"
@@ -162,14 +140,17 @@ app.post("/answer", async (req, res) => {
 `);
 });
 
-/* -------------------- USER SPEECH -------------------- */
+/* ---------------- LISTEN ---------------- */
 
 app.post("/listen", async (req, res) => {
   const callSid = req.body.CallSid;
-  const userSpeech = req.body.SpeechResult || "";
+  const userSpeech = (req.body.SpeechResult || "").trim();
 
   const session = calls.get(callSid);
-  if (!session) return res.end();
+  if (!session) {
+    res.type("text/xml").send("<Response><Hangup/></Response>");
+    return;
+  }
 
   const current = FLOW[session.state];
   let nextState = null;
@@ -178,11 +159,13 @@ app.post("/listen", async (req, res) => {
     nextState = await current.next(userSpeech);
   }
 
-  // clarification fallback
+  // clarification
   if (!nextState) {
     res.type("text/xml").send(`
 <Response>
-  <Say language="gu-IN">માફ કરશો, ફરી એક વખત કહી શકશો?</Say>
+  <Say voice="Polly.Aditi" language="gu-IN">
+    માફ કરશો, ફરી એક વખત સ્પષ્ટ રીતે કહી શકશો?
+  </Say>
   <Gather input="speech"
           language="gu-IN"
           action="${BASE_URL}/listen"
@@ -197,12 +180,12 @@ app.post("/listen", async (req, res) => {
   session.state = nextState;
   const node = FLOW[nextState];
 
-  const audio = await speak(node.prompt, `${nextState}.xml`);
-
   if (node.end) {
     res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Say voice="Polly.Aditi" language="gu-IN">
+    ${node.prompt}
+  </Say>
   <Hangup/>
 </Response>
 `);
@@ -210,7 +193,9 @@ app.post("/listen", async (req, res) => {
   } else {
     res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
+  <Say voice="Polly.Aditi" language="gu-IN">
+    ${node.prompt}
+  </Say>
   <Gather input="speech"
           language="gu-IN"
           action="${BASE_URL}/listen"
@@ -222,7 +207,7 @@ app.post("/listen", async (req, res) => {
   }
 });
 
-/* -------------------- START SERVER -------------------- */
+/* ---------------- START ---------------- */
 
 app.listen(PORT, () => {
   console.log("✅ Gujarati AI Voice Agent running (FINAL CLEAN)");
