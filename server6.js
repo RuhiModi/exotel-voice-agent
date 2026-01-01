@@ -1,318 +1,163 @@
-/*************************************************
- * GUJARATI AI VOICE AGENT
- * FINAL STABLE + SAFE LLM FALLBACK
- *************************************************/
-
 import express from "express";
 import bodyParser from "body-parser";
-import dotenv from "dotenv";
 import fs from "fs";
-import path from "path";
-import fetch from "node-fetch";
-import { fileURLToPath } from "url";
-import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
+import fetch from "node-fetch";
 
-dotenv.config();
-
-/* ======================
-   ENV SAFETY GUARDS
-====================== */
-if (!process.env.BASE_URL) {
-  console.error("❌ BASE_URL missing");
-  process.exit(1);
-}
-
-if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-  console.error("❌ GOOGLE_SERVICE_ACCOUNT_JSON missing");
-  process.exit(1);
-}
-
-if (!process.env.GOOGLE_SHEET_ID) {
-  console.error("❌ GOOGLE_SHEET_ID missing");
-  process.exit(1);
-}
-
-/* ======================
-   BASIC SETUP
-====================== */
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 10000;
-const BASE_URL = process.env.BASE_URL;
-const USE_LLM = process.env.USE_LLM === "true";
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-/* ======================
-   PATHS
-====================== */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const AUDIO_DIR = path.join(__dirname, "audio");
-if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
-app.use("/audio", express.static(AUDIO_DIR));
-
-/* ======================
-   GOOGLE TTS
-====================== */
-const ttsClient = new textToSpeech.TextToSpeechClient();
-
-/* ======================
-   GOOGLE SHEETS
-====================== */
-const sheets = google.sheets("v4");
+/* ===============================
+   GOOGLE SHEETS AUTH (SAFE)
+================================ */
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+  keyFile: "/etc/secrets/serviceAccount.json",
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_RANGE = "Sheet1!A:H";
+const sheets = google.sheets({ version: "v4", auth });
 
-/* ======================
-   CALL MEMORY
-====================== */
-const calls = new Map();
-
-/* ======================
-   FLOW (UNCHANGED)
-====================== */
-const FLOW = {
-  intro: {
-    prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. શું હું આપનો થોડો સમય લઈ શકું?",
-    next: (t) => {
-      if (/હા|ચાલે|લઈ શકો/.test(t)) return "task_check";
-      if (/સમય નથી|પછી/.test(t)) return "end_no_time";
-      return null;
-    }
-  },
-
-  task_check: {
-    prompt:
-      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
-    next: (t) => {
-      if (/પૂર્ણ|થઈ ગયું/.test(t)) return "task_done";
-      if (/બાકી|નથી/.test(t)) return "task_pending";
-      return null;
-    }
-  },
-
-  task_done: {
-    prompt:
-      "આભાર. આપનો પ્રતિસાદ નોંધાયો છે. શુભ દિવસ.",
-    end: true
-  },
-
-  task_pending: {
-    prompt:
-      "આભાર. આપની ફરિયાદ નોંધાઈ ગઈ છે. અમારી ટીમ સંપર્ક કરશે.",
-    end: true
-  },
-
-  end_no_time: {
-    prompt:
-      "બરાબર. કોઈ વાત નથી. આભાર.",
-    end: true
-  }
-};
-
-/* ======================
-   TTS HELPER
-====================== */
-async function speak(text, file) {
-  const filePath = path.join(AUDIO_DIR, file);
-  if (!fs.existsSync(filePath)) {
-    const [res] = await ttsClient.synthesizeSpeech({
-      input: { text },
-      voice: { languageCode: "gu-IN" },
-      audioConfig: { audioEncoding: "MP3" }
-    });
-    fs.writeFileSync(filePath, res.audioContent);
-  }
-  return `${BASE_URL}/audio/${file}`;
-}
-
-/* ======================
-   SAFE GROQ LLM
-====================== */
-async function askGroq(userText) {
+async function logToSheet(row) {
   try {
-    const res = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a Gujarati government call assistant. Reply briefly and politely in Gujarati. Ask one clarification or give a short helpful response."
-            },
-            { role: "user", content: userText }
-          ]
-        })
-      }
-    );
-
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content || "કૃપા કરીને ફરીથી કહેશો?";
-  } catch {
-    return "કૃપા કરીને ફરીથી કહેશો?";
-  }
-}
-
-/* ======================
-   LOG TO SHEET (A–H)
-====================== */
-async function logToSheet(call) {
-  try {
-    const client = await auth.getClient();
-
     await sheets.spreadsheets.values.append({
-      auth: client,
-      spreadsheetId: SPREADSHEET_ID,
-      range: SHEET_RANGE,
+      spreadsheetId: SHEET_ID,
+      range: "Sheet1!A:H",
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[
-          new Date().toISOString(),
-          call.sid,
-          call.from || "",
-          "gu-IN",
-          call.agentText.join(" | "),
-          call.userText.join(" | "),
-          call.status,
-          Math.floor((Date.now() - call.start) / 1000)
-        ]]
-      }
+        values: [row],
+      },
     });
-  } catch (e) {
-    console.error("❌ Sheet log failed:", e.message);
+  } catch (err) {
+    console.error("❌ Sheet log failed:", err.message);
   }
 }
 
-/* ======================
-   ANSWER (CALL START)
-====================== */
-app.post("/answer", async (req, res) => {
-  const sid = req.body.CallSid;
+/* ===============================
+   CALL STATE STORE
+================================ */
+const calls = new Map();
 
-  calls.set(sid, {
-    sid,
-    from: req.body.From,
-    state: "intro",
+/* ===============================
+   SIMPLE LLM REPLY (GROQ)
+================================ */
+async function getLLMReply(userText) {
+  if (!userText) {
+    return "કૃપા કરીને ફરી કહેશો?";
+  }
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama3-8b-8192",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a polite Gujarati government helpdesk voice agent.",
+          },
+          { role: "user", content: userText },
+        ],
+      }),
+    });
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "બરાબર.";
+  } catch (e) {
+    return "માફ કરશો, ફરી પ્રયાસ કરીએ.";
+  }
+}
+
+/* ===============================
+   TWILIO ANSWER
+================================ */
+app.post("/answer", (req, res) => {
+  const { CallSid, From } = req.body;
+
+  calls.set(CallSid, {
     start: Date.now(),
-    agentText: [],
-    userText: [],
-    status: "IN_PROGRESS"
+    caller: From || "",
+    agentText: "",
+    userText: "",
+    lang: "gu-IN",
   });
 
-  const audio = await speak(FLOW.intro.prompt, "intro.mp3");
-  calls.get(sid).agentText.push(FLOW.intro.prompt);
-
   res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
-  <Gather input="speech"
-          language="gu-IN"
-          action="${BASE_URL}/listen"
-          method="POST"
-          timeout="6"
-          speechTimeout="auto"/>
+  <Say language="gu-IN">
+    નમસ્તે, હું સરકારના ઇ-કાર્યાલય તરફથી બોલું છું.
+  </Say>
+  <Gather input="speech" language="gu-IN" timeout="6" action="/listen" method="POST"/>
 </Response>
 `);
 });
 
-/* ======================
-   LISTEN (HYBRID)
-====================== */
+/* ===============================
+   LISTEN
+================================ */
 app.post("/listen", async (req, res) => {
-  const sid = req.body.CallSid;
-  const call = calls.get(sid);
+  const { CallSid, SpeechResult } = req.body;
+  const call = calls.get(CallSid);
 
   if (!call) {
-    res.type("text/xml").send("<Response><Hangup/></Response>");
-    return;
+    return res.type("text/xml").send("<Response><Hangup/></Response>");
   }
 
-  const userText = (req.body.SpeechResult || "").trim();
+  const userText = (SpeechResult || "").trim();
+  call.userText = userText;
 
-  if (!userText) {
-    call.status = "NO_INPUT";
-    await logToSheet(call);
-    calls.delete(sid);
-    res.type("text/xml").send("<Response><Hangup/></Response>");
-    return;
-  }
-
-  call.userText.push(userText);
-
-  const state = FLOW[call.state];
-  const nextId = state.next(userText);
-  const next = FLOW[nextId];
-
-  /* ===== RULE FLOW ===== */
-  if (next) {
-    const audio = await speak(next.prompt, `${nextId}.mp3`);
-    call.agentText.push(next.prompt);
-
-    if (next.end) {
-      call.status = "COMPLETED";
-      await logToSheet(call);
-      calls.delete(sid);
-      res.type("text/xml").send(`<Response><Play>${audio}</Play><Hangup/></Response>`);
-      return;
-    }
-
-    call.state = nextId;
-    res.type("text/xml").send(`
-<Response>
-  <Play>${audio}</Play>
-  <Gather input="speech"
-          language="gu-IN"
-          action="${BASE_URL}/listen"
-          method="POST"
-          timeout="6"
-          speechTimeout="auto"/>
-</Response>
-`);
-    return;
-  }
-
-  /* ===== LLM FALLBACK ===== */
-  let reply = "કૃપા કરીને ફરીથી કહેશો?";
-  if (USE_LLM && process.env.GROQ_API_KEY) {
-    reply = await askGroq(userText);
-  }
-
-  const audio = await speak(reply, "llm.mp3");
-  call.agentText.push(reply);
+  const reply = await getLLMReply(userText);
+  call.agentText = reply;
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${audio}</Play>
-  <Gather input="speech"
-          language="gu-IN"
-          action="${BASE_URL}/listen"
-          method="POST"
-          timeout="6"
-          speechTimeout="auto"/>
+  <Say language="gu-IN">${reply}</Say>
+  <Gather input="speech" language="gu-IN" timeout="6" action="/listen" method="POST"/>
 </Response>
 `);
 });
 
-/* ======================
-   SERVER START
-====================== */
+/* ===============================
+   CALL STATUS (DISCONNECT LOGGING)
+================================ */
+app.post("/status", async (req, res) => {
+  const { CallSid, CallStatus } = req.body;
+  const call = calls.get(CallSid);
+
+  if (!call) return res.sendStatus(200);
+
+  if (["completed", "failed", "busy", "no-answer"].includes(CallStatus)) {
+    const duration = Math.floor((Date.now() - call.start) / 1000);
+
+    await logToSheet([
+      new Date().toISOString(), // A
+      CallSid,                  // B
+      call.caller,              // C
+      call.lang,                // D
+      call.agentText || "",     // E
+      call.userText || "",      // F
+      CallStatus,               // G
+      duration,                 // H
+    ]);
+
+    calls.delete(CallSid);
+  }
+
+  res.sendStatus(200);
+});
+
+/* ===============================
+   START SERVER
+================================ */
 app.listen(PORT, () => {
-  console.log("✅ Gujarati AI Voice Agent running (FINAL STABLE + LLM)");
+  console.log("✅ Gujarati AI Voice Agent running (FINAL CLEAN)");
 });
