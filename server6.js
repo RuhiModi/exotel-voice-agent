@@ -114,7 +114,8 @@ app.post("/answer", (req, res) => {
           action="${BASE_URL}/listen"
           method="POST"
           speechTimeout="auto"
-          timeout="6"/>
+          timeout="6"
+          speechModel="phone_call"/>
 </Response>
 `);
 });
@@ -142,7 +143,8 @@ app.post("/listen", async (req, res) => {
           action="${BASE_URL}/listen"
           method="POST"
           speechTimeout="auto"
-          timeout="6"/>
+          timeout="6"
+          speechModel="phone_call"/>
 </Response>
 `);
     return;
