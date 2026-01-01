@@ -1,6 +1,8 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT — HYBRID STABLE
- * Logs on END + Logs on disconnect
+ * GUJARATI AI VOICE AGENT — HYBRID FINAL (OPTION 1)
+ * ✔ Intent tolerant
+ * ✔ Retry capped
+ * ✔ Sheet logging restored
  *************************************************/
 
 import express from "express";
@@ -21,7 +23,7 @@ app.use(bodyParser.json());
 const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
-/* ================= FILE SETUP ================= */
+/* ================= FILE ================= */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -38,10 +40,10 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: "v4", auth });
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_RANGE = "Sheet1!A:H"; // 🔴 keep SAME tab name you used before
+const SHEET_RANGE = "Sheet1!A:H"; // 🔴 keep SAME tab as before
 
 async function logToSheet(call) {
-  if (call.logged) return; // 🛑 prevent duplicates
+  if (call.logged) return;
   call.logged = true;
 
   await sheets.spreadsheets.values.append({
@@ -63,6 +65,14 @@ async function logToSheet(call) {
   });
 }
 
+/* ================= HELPERS ================= */
+function normalize(text = "") {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .trim();
+}
+
 /* ================= MEMORY ================= */
 const calls = new Map();
 
@@ -72,24 +82,33 @@ const FLOW = {
     prompt:
       "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. શું હું આપનો થોડો સમય લઈ શકું?",
     next: (t) => {
-      if (/હા|ચાલે/.test(t)) return "task_check";
+      if (/(હા|હાં|બરાબર|ચાલે|ok|okay)/.test(t)) return "task_check";
+      if (/(નથી|સમય નથી|પછી)/.test(t)) return "end_no_time";
       return null;
     }
   },
+
   task_check: {
     prompt: "યોજનાકીય કેમ્પ દરમ્યાન આપનું કામ પૂર્ણ થયું છે કે નહીં?",
     next: (t) => {
-      if (/પૂર્ણ/.test(t)) return "done";
-      if (/નથી|બાકી/.test(t)) return "pending";
+      if (/(પૂર્ણ|થઈ|થયું|થયું છે)/.test(t)) return "done";
+      if (/(નથી|બાકી|રહ્યું)/.test(t)) return "pending";
       return null;
     }
   },
+
   done: {
     prompt: "આભાર. આપનો પ્રતિસાદ નોંધાયો છે.",
     end: true
   },
+
   pending: {
     prompt: "આભાર. આપની ફરિયાદ નોંધાઈ ગઈ છે.",
+    end: true
+  },
+
+  end_no_time: {
+    prompt: "બરાબર. આભાર.",
     end: true
   }
 };
@@ -120,6 +139,7 @@ app.post("/answer", async (req, res) => {
     userText: "",
     status: "in-progress",
     startTime: Date.now(),
+    retryCount: 0,
     logged: false
   });
 
@@ -146,7 +166,7 @@ app.post("/listen", async (req, res) => {
     return res.type("text/xml").send("<Response><Hangup/></Response>");
   }
 
-  const text = (req.body.SpeechResult || "").trim();
+  const text = normalize(req.body.SpeechResult || "");
   if (text) call.userText += ` ${text}`;
 
   const state = FLOW[call.state];
@@ -154,6 +174,22 @@ app.post("/listen", async (req, res) => {
   const next = FLOW[nextId];
 
   if (!next) {
+    call.retryCount++;
+
+    if (call.retryCount >= 2) {
+      call.status = "no-understanding";
+      call.duration = Math.floor((Date.now() - call.startTime) / 1000);
+      await logToSheet(call);
+      calls.delete(sid);
+
+      return res.type("text/xml").send(`
+<Response>
+  <Play>માફ કરશો, આપનો જવાબ સમજાઈ શક્યો નથી. આભાર.</Play>
+  <Hangup/>
+</Response>
+`);
+    }
+
     const retry = await speak("કૃપા કરીને ફરી કહેશો?", "retry.mp3");
     return res.type("text/xml").send(`
 <Response>
@@ -173,7 +209,7 @@ app.post("/listen", async (req, res) => {
   if (next.end) {
     call.status = "completed";
     call.duration = Math.floor((Date.now() - call.startTime) / 1000);
-    await logToSheet(call); // ✅ END logging
+    await logToSheet(call);
     calls.delete(sid);
 
     return res.type("text/xml").send(`
@@ -205,7 +241,7 @@ app.post("/call-status", async (req, res) => {
   if (call && !call.logged) {
     call.status = req.body.CallStatus || "disconnected";
     call.duration = Math.floor((Date.now() - call.startTime) / 1000);
-    await logToSheet(call); // ✅ disconnect logging
+    await logToSheet(call);
     calls.delete(sid);
   }
 
@@ -214,5 +250,5 @@ app.post("/call-status", async (req, res) => {
 
 /* ================= START ================= */
 app.listen(PORT, () => {
-  console.log("✅ Gujarati AI Voice Agent running (HYBRID STABLE)");
+  console.log("✅ Gujarati AI Voice Agent running (OPTION 1 FINAL)");
 });
