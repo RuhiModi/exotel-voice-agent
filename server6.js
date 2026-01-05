@@ -1,6 +1,6 @@
 /*************************************************
  * GUJARATI AI VOICE AGENT – STABLE + CLEAN SHEETS
- * Agent_Text & User_Text SAME LOGIC
+ * Agent_Text & User_Text SAME LOGIC (FIXED)
  *************************************************/
 
 import express from "express";
@@ -63,7 +63,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const sessions = new Map();
 
 /* ======================
-   FLOW (UNCHANGED)
+   FLOW
 ====================== */
 const FLOW = {
   intro: {
@@ -113,14 +113,27 @@ async function preloadAll() {
 }
 
 /* ======================
-   GUJARATI CLEANER (SAFE)
+   HELPERS (HUMAN-LIKE)
 ====================== */
-function cleanGujaratiSentence(text) {
-  return text
-    .split(" ")
-    .filter(word => /[\u0A80-\u0AFF]/.test(word))
-    .join(" ")
-    .trim();
+
+// sentence must contain Gujarati to be meaningful
+function hasGujarati(text) {
+  return /[\u0A80-\u0AFF]/.test(text);
+}
+
+// human-like intent detection
+function isTaskPendingGujarati(text) {
+  const signals = [
+    "નથી",
+    "નથી થયું",
+    "હજુ",
+    "બાકી",
+    "પૂર્ણ નથી",
+    "થોડું થયું",
+    "ચાલુ છે",
+    "અટક્યું"
+  ];
+  return signals.some(s => text.includes(s));
 }
 
 /* ======================
@@ -192,7 +205,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (KEY FIX)
+   LISTEN (FIXED)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -208,16 +221,16 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  // ✅ SAME LOGIC AS YESTERDAY, BUT CLEAN
-  const cleaned = cleanGujaratiSentence(raw);
-  if (cleaned) {
-    s.userTexts.push(cleaned);
+  // ✅ SAME LOGIC AS AGENT_TEXT
+  // store full sentence, mixed Gujarati + English allowed
+  if (hasGujarati(raw)) {
+    s.userTexts.push(raw);
   }
 
   let next;
   if (s.state === "intro") next = "task_check";
   else if (s.state === "task_check")
-    next = raw.includes("નથી") || raw.includes("બાકી")
+    next = isTaskPendingGujarati(raw)
       ? "task_pending"
       : "task_done";
   else next = "problem_recorded";
@@ -265,5 +278,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – Sheet logic restored");
+  console.log("✅ Gujarati AI Voice Agent – Human-like & Correct READY");
 });
