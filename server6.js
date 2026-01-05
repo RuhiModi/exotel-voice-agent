@@ -1,5 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – AGENT & USER SYMMETRIC LOGGING
+ * GUJARATI AI VOICE AGENT – STABLE + CLEAN SHEETS
+ * Agent_Text & User_Text SAME LOGIC
  *************************************************/
 
 import express from "express";
@@ -8,7 +9,6 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import fetch from "node-fetch";
 import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
@@ -63,12 +63,12 @@ app.use("/audio", express.static(AUDIO_DIR));
 const sessions = new Map();
 
 /* ======================
-   SCRIPT FLOW
+   FLOW (UNCHANGED)
 ====================== */
 const FLOW = {
   intro: {
     prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. યોજનાકીય કેમ્પ દરમિયાન આપનું કામ થયેલ છે કે નહીં તેની પુષ્ટિ માટે આ કૉલ છે. શું હું આપનો થોડો સમય લઈ શકું?"
+      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. શું હું આપનો થોડો સમય લઈ શકું?"
   },
   task_check: {
     prompt:
@@ -76,7 +76,7 @@ const FLOW = {
   },
   task_done: {
     prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ પૂર્ણ થયું છે. આપનો પ્રતિસાદ અમારા માટે મહત્વનો છે. આભાર.",
+      "ખૂબ આનંદ થયો કે આપનું કામ પૂર્ણ થયું છે. આભાર.",
     end: true
   },
   task_pending: {
@@ -91,7 +91,7 @@ const FLOW = {
 };
 
 /* ======================
-   PRELOAD AUDIO
+   AUDIO CACHE
 ====================== */
 async function generateAudio(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -113,16 +113,12 @@ async function preloadAll() {
 }
 
 /* ======================
-   HELPERS
+   GUJARATI CLEANER (SAFE)
 ====================== */
-function isGujarati(text) {
-  return /[\u0A80-\u0AFF]/.test(text);
-}
-
-function cleanGujarati(text) {
+function cleanGujaratiSentence(text) {
   return text
     .split(" ")
-    .filter(w => isGujarati(w))
+    .filter(word => /[\u0A80-\u0AFF]/.test(word))
     .join(" ")
     .trim();
 }
@@ -172,7 +168,6 @@ app.post("/call", async (req, res) => {
     state: "intro",
     agentTexts: [],
     userTexts: [],
-    userBuffer: [],
     result: ""
   });
 
@@ -190,35 +185,42 @@ app.post("/answer", (req, res) => {
 <Response>
   <Play>${BASE_URL}/audio/intro.mp3</Play>
   <Gather input="speech" language="gu-IN"
-    action="${BASE_URL}/listen"
-    timeout="6"
-    speechTimeout="auto"/>
+    timeout="8" speechTimeout="auto"
+    action="${BASE_URL}/listen"/>
 </Response>
 `);
 });
 
 /* ======================
-   LISTEN
+   LISTEN (KEY FIX)
 ====================== */
-app.post("/listen", async (req, res) => {
+app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
-  if (raw && isGujarati(raw)) {
-    s.userBuffer.push(raw);
+  if (!raw) {
+    return res.type("text/xml").send(`
+<Response>
+  <Gather input="speech" language="gu-IN"
+    timeout="8" speechTimeout="auto"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
   }
 
-  let next =
-    s.state === "intro" ? "task_check" :
-    s.state === "task_check" && raw.includes("નથી") ? "task_pending" :
-    s.state === "task_pending" ? "problem_recorded" :
-    "task_done";
-
-  // 🔐 BEFORE moving to next state, commit user sentence
-  if (s.userBuffer.length) {
-    s.userTexts.push(cleanGujarati(s.userBuffer.join(" ")));
-    s.userBuffer = [];
+  // ✅ SAME LOGIC AS YESTERDAY, BUT CLEAN
+  const cleaned = cleanGujaratiSentence(raw);
+  if (cleaned) {
+    s.userTexts.push(cleaned);
   }
+
+  let next;
+  if (s.state === "intro") next = "task_check";
+  else if (s.state === "task_check")
+    next = raw.includes("નથી") || raw.includes("બાકી")
+      ? "task_pending"
+      : "task_done";
+  else next = "problem_recorded";
 
   s.agentTexts.push(FLOW[next].prompt);
 
@@ -226,11 +228,23 @@ app.post("/listen", async (req, res) => {
     s.result = next;
     logToSheet(s);
     sessions.delete(s.sid);
-    return res.send(`<Response><Play>${BASE_URL}/audio/${next}.mp3</Play><Hangup/></Response>`);
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Hangup/>
+</Response>
+`);
   }
 
   s.state = next;
-  res.send(`<Response><Play>${BASE_URL}/audio/${next}.mp3</Play><Gather input="speech" action="${BASE_URL}/listen"/></Response>`);
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="8" speechTimeout="auto"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
 });
 
 /* ======================
@@ -251,5 +265,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – Agent/User symmetric logging READY");
+  console.log("✅ Gujarati AI Voice Agent – Sheet logic restored");
 });
