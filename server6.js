@@ -1,5 +1,5 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – CLEAN FINAL VERSION
+ * GUJARATI AI VOICE AGENT – FINAL HUMAN-LIKE VERSION
  * Outbound Only | Twilio + Groq + Google TTS
  *************************************************/
 
@@ -59,7 +59,7 @@ if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
 app.use("/audio", express.static(AUDIO_DIR));
 
 /* ======================
-   CALL MEMORY (SOURCE OF TRUTH)
+   SESSION MEMORY (SOURCE OF TRUTH)
 ====================== */
 const sessions = new Map();
 
@@ -120,23 +120,42 @@ async function preloadAll() {
 }
 
 /* ======================
-   LLM (ONLY WHERE NEEDED)
+   RULE-BASED PENDING DETECTION (IMPORTANT)
 ====================== */
-async function detectNextState(state, text) {
+function isClearlyPending(text) {
+  const patterns = [
+    "નથી થયું",
+    "પૂર્ણ નથી",
+    "હજુ કામ",
+    "બાકી",
+    "ચાલુ છે",
+    "અટક્યું",
+    "થઈ રહ્યું છે",
+    "પક્યું નથી"
+  ];
+  return patterns.some(p => text.includes(p));
+}
+
+/* ======================
+   LLM – ONLY FOR task_check
+====================== */
+async function decideTaskStatus(text) {
   const prompt = `
-You are a Gujarati intent classifier.
+You are assisting a government call agent.
 
-Current step: ${state}
+Decide only one thing:
+Has the work been completed or not?
 
-Allowed:
-intro → task_check | end_no_time
-task_check → task_done | task_pending
-
-User said:
+User reply (Gujarati):
 "${text}"
 
+Rules:
+- If NOT completed → task_pending
+- If completed → task_done
+- If unsure → task_pending
+
 Reply ONLY:
-task_check, task_done, task_pending, end_no_time
+task_done or task_pending
 `;
 
   const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -180,13 +199,13 @@ function logToSheet(s) {
 }
 
 /* ======================
-   OUTBOUND CALL (CREATE SESSION HERE)
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
   if (!to) return res.status(400).json({ error: "Missing to" });
 
-  const twilioCall = await twilioClient.calls.create({
+  const call = await twilioClient.calls.create({
     to,
     from: process.env.TWILIO_FROM_NUMBER,
     url: `${BASE_URL}/answer`,
@@ -195,8 +214,8 @@ app.post("/call", async (req, res) => {
     method: "POST"
   });
 
-  sessions.set(twilioCall.sid, {
-    sid: twilioCall.sid,
+  sessions.set(call.sid, {
+    sid: call.sid,
     userPhone: to,
     startTime: Date.now(),
     state: "intro",
@@ -205,7 +224,7 @@ app.post("/call", async (req, res) => {
     result: ""
   });
 
-  res.json({ status: "calling", sid: twilioCall.sid });
+  res.json({ status: "calling", sid: call.sid });
 });
 
 /* ======================
@@ -229,7 +248,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (NO LOOPS)
+   LISTEN – HUMAN-LIKE FLOW
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -248,10 +267,17 @@ app.post("/listen", async (req, res) => {
   s.userTexts.push(text);
 
   let next;
-  if (s.state === "task_pending") {
+
+  if (s.state === "task_check") {
+    if (isClearlyPending(text)) {
+      next = "task_pending";
+    } else {
+      next = await decideTaskStatus(text);
+    }
+  } else if (s.state === "task_pending") {
     next = "problem_recorded";
   } else {
-    next = await detectNextState(s.state, text);
+    next = "task_check";
   }
 
   s.agentTexts.push(FLOW[next].prompt);
@@ -296,5 +322,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent READY");
+  console.log("✅ Gujarati AI Voice Agent (Human-like) READY");
 });
