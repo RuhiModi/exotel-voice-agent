@@ -220,14 +220,19 @@ app.post("/answer", (req, res) => {
   const sid = req.body.CallSid;
 
   callSessions.set(sid, {
-    sid,
-    state: "intro",
-    startTime: Date.now(),
-    agentTexts: [FLOW.intro.prompt],
-    userTexts: [],
-    from: req.body.From,
-    result: ""
-  });
+     sid,
+     state: "intro",
+     startTime: Date.now(),
+     agentTexts: [FLOW.intro.prompt],
+     userTexts: [],
+   
+     // ✅ CORRECT FIELDS
+     userPhone: req.body.To,        // USER NUMBER (outbound target)
+     twilioPhone: req.body.From,    // YOUR Twilio number
+   
+     result: ""
+   });
+
 
   res.type("text/xml").send(`
 <Response>
