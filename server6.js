@@ -1,6 +1,6 @@
 /*************************************************
  * GUJARATI AI VOICE AGENT – STABLE + CLEAN SHEETS
- * Agent_Text & User_Text SAME LOGIC (FIXED)
+ * Agent_Text & User_Text SAME LOGIC + NORMALIZED
  *************************************************/
 
 import express from "express";
@@ -113,7 +113,7 @@ async function preloadAll() {
 }
 
 /* ======================
-   HELPERS (HUMAN-LIKE)
+   HELPERS
 ====================== */
 
 // sentence must contain Gujarati to be meaningful
@@ -134,6 +134,33 @@ function isTaskPendingGujarati(text) {
     "અટક્યું"
   ];
   return signals.some(s => text.includes(s));
+}
+
+// ✅ KEY ADDITION: normalize English → Gujarati words
+function normalizeMixedGujarati(text) {
+  const dict = {
+    aadhar: "આધાર",
+    aadhaar: "આધાર",
+    card: "કાર્ડ",
+    data: "ડેટા",
+    entry: "એન્ટ્રી",
+    update: "સુધારો",
+    correction: "સુધારો",
+    name: "નામ",
+    address: "સરનામું",
+    mobile: "મોબાઇલ",
+    number: "નંબર",
+    change: "ફેરફાર"
+  };
+
+  let normalized = text;
+
+  for (const key in dict) {
+    const regex = new RegExp(`\\b${key}\\b`, "gi");
+    normalized = normalized.replace(regex, dict[key]);
+  }
+
+  return normalized;
 }
 
 /* ======================
@@ -205,7 +232,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (FIXED)
+   LISTEN (UPDATED)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -221,10 +248,10 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  // ✅ SAME LOGIC AS AGENT_TEXT
-  // store full sentence, mixed Gujarati + English allowed
+  // ✅ FULL SENTENCE + NORMALIZED
   if (hasGujarati(raw)) {
-    s.userTexts.push(raw);
+    const normalized = normalizeMixedGujarati(raw);
+    s.userTexts.push(normalized);
   }
 
   let next;
@@ -278,5 +305,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – Human-like & Correct READY");
+  console.log("✅ Gujarati AI Voice Agent – FINAL & STABLE READY");
 });
