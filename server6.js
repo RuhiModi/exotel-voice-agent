@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – FULL CONVERSATION LOG
- * Outbound Only | Twilio + Groq + Google TTS
+ * GUJARATI AI VOICE AGENT – GUJARATI ONLY LOGGING
+ * Full Conversation | Outbound | Stable
  *************************************************/
 
 import express from "express";
@@ -165,7 +165,7 @@ User reply:
 }
 
 /* ======================
-   GOOGLE SHEET LOG (FULL CONVERSATION)
+   GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
   sheets.spreadsheets.values.append({
@@ -177,8 +177,8 @@ function logToSheet(s) {
         new Date(s.startTime).toISOString(),
         s.sid,
         s.userPhone,
-        s.agentTexts.join(" | "),   // FULL agent flow
-        s.userTexts.join(" | "),    // ✅ FULL user flow
+        s.agentTexts.join(" | "),
+        s.userTexts.join(" | "), // ✅ GUJARATI ONLY FULL FLOW
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
         "Completed"
@@ -253,7 +253,10 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  s.userTexts.push(text); // ✅ STORE EVERY USER UTTERANCE
+  // ✅ STORE ONLY GUJARATI USER SPEECH
+  if (/[\u0A80-\u0AFF]/.test(text)) {
+    s.userTexts.push(text);
+  }
 
   let next;
   if (s.state === "task_check") {
@@ -308,5 +311,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent (FULL CONVERSATION LOGGING) READY");
+  console.log("✅ Gujarati AI Voice Agent (Gujarati-only logging) READY");
 });
