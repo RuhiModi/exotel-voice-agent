@@ -59,7 +59,7 @@ if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
 app.use("/audio", express.static(AUDIO_DIR));
 
 /* ======================
-   SESSION MEMORY (SOURCE OF TRUTH)
+   SESSION MEMORY
 ====================== */
 const sessions = new Map();
 
@@ -120,7 +120,7 @@ async function preloadAll() {
 }
 
 /* ======================
-   RULE-BASED PENDING DETECTION (IMPORTANT)
+   RULE-BASED PENDING DETECTION
 ====================== */
 function isClearlyPending(text) {
   const patterns = [
@@ -141,8 +141,6 @@ function isClearlyPending(text) {
 ====================== */
 async function decideTaskStatus(text) {
   const prompt = `
-You are assisting a government call agent.
-
 Decide only one thing:
 Has the work been completed or not?
 
@@ -150,9 +148,9 @@ User reply (Gujarati):
 "${text}"
 
 Rules:
-- If NOT completed → task_pending
-- If completed → task_done
-- If unsure → task_pending
+- NOT completed → task_pending
+- completed → task_done
+- unsure → task_pending
 
 Reply ONLY:
 task_done or task_pending
@@ -176,6 +174,22 @@ task_done or task_pending
 }
 
 /* ======================
+   CLEAN USER STATEMENT (KEY FIX)
+====================== */
+function getFinalUserStatement(userTexts = []) {
+  if (!userTexts.length) return "";
+
+  const meaningful = userTexts.filter(t =>
+    t.length > 6 &&
+    !/^(ok|okay|thank|thanks|on|yes|no)$/i.test(t.trim())
+  );
+
+  return meaningful.length
+    ? meaningful[meaningful.length - 1]
+    : userTexts[userTexts.length - 1];
+}
+
+/* ======================
    GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
@@ -189,7 +203,7 @@ function logToSheet(s) {
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
-        s.userTexts.join(" | "),
+        getFinalUserStatement(s.userTexts), // ✅ FIXED
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
         "Completed"
@@ -248,7 +262,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN – HUMAN-LIKE FLOW
+   LISTEN
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -267,13 +281,10 @@ app.post("/listen", async (req, res) => {
   s.userTexts.push(text);
 
   let next;
-
   if (s.state === "task_check") {
-    if (isClearlyPending(text)) {
-      next = "task_pending";
-    } else {
-      next = await decideTaskStatus(text);
-    }
+    next = isClearlyPending(text)
+      ? "task_pending"
+      : await decideTaskStatus(text);
   } else if (s.state === "task_pending") {
     next = "problem_recorded";
   } else {
@@ -322,5 +333,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent (Human-like) READY");
+  console.log("✅ Gujarati AI Voice Agent (Clean Logging) READY");
 });
