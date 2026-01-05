@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT (VOICE ONLY + LLM)
- * Twilio Voice + Google TTS + Groq LLM + Sheets
+ * GUJARATI AI VOICE AGENT – OUTBOUND READY
+ * Twilio Voice + Groq LLM + Google TTS + Sheets
  *************************************************/
 
 import express from "express";
@@ -10,12 +10,15 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import fetch from "node-fetch";
+import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
-import twilio from "twilio";
 
 dotenv.config();
 
+/* ======================
+   APP SETUP
+====================== */
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -62,7 +65,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const calls = new Map();
 
 /* ======================
-   SCRIPT FLOW (FIXED)
+   FIXED SCRIPT FLOW
 ====================== */
 const FLOW = {
   intro: {
@@ -100,7 +103,7 @@ const FLOW = {
 };
 
 /* ======================
-   PRELOAD TTS
+   TTS PRELOAD
 ====================== */
 async function generateAudio(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -131,14 +134,15 @@ You are a Gujarati voice-call intent classifier.
 
 Current step: ${currentState}
 
-Valid next steps:
-intro → task_check → task_done / task_pending / end_no_time
+Valid transitions:
+intro → task_check | end_no_time
+task_check → task_done | task_pending
 task_pending → problem_recorded
 
 User said (Gujarati):
 "${userText}"
 
-Reply ONLY with one of:
+Reply ONLY with:
 task_check, task_done, task_pending, problem_recorded, end_no_time, unknown
 `;
 
@@ -183,6 +187,28 @@ function logToSheet(call) {
 }
 
 /* ======================
+   OUTBOUND CALL API
+====================== */
+app.post("/call", async (req, res) => {
+  try {
+    const { to } = req.body;
+    if (!to) return res.status(400).json({ error: "Missing 'to' number" });
+
+    const call = await twilioClient.calls.create({
+      to,
+      from: process.env.TWILIO_FROM_NUMBER,
+      url: `${BASE_URL}/answer`,
+      method: "POST"
+    });
+
+    res.json({ status: "calling", sid: call.sid, to });
+  } catch (err) {
+    console.error("Outbound call error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================
    ANSWER (CALL START)
 ====================== */
 app.post("/answer", (req, res) => {
@@ -211,7 +237,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (LLM LOGIC)
+   LISTEN (LLM DRIVEN)
 ====================== */
 app.post("/listen", async (req, res) => {
   const call = calls.get(req.body.CallSid);
@@ -234,7 +260,6 @@ app.post("/listen", async (req, res) => {
   call.userTexts.push(text);
 
   const nextId = await detectNextState(call.state, text);
-
   if (!FLOW[nextId]) {
     return res.type("text/xml").send(`
 <Response>
@@ -282,5 +307,5 @@ app.post("/listen", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent running (LLM + Voice Only)");
+  console.log("✅ Gujarati AI Voice Agent running (Outbound + LLM)");
 });
