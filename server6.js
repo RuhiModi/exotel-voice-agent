@@ -1,5 +1,5 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – FINAL STABLE VERSION
+ * GUJARATI AI VOICE AGENT – FULL CONVERSATION LOG
  * Outbound Only | Twilio + Groq + Google TTS
  *************************************************/
 
@@ -120,7 +120,7 @@ async function preloadAll() {
 }
 
 /* ======================
-   RULE-BASED PENDING DETECTION
+   RULE-BASED PENDING
 ====================== */
 function isClearlyPending(text) {
   return [
@@ -140,10 +140,7 @@ function isClearlyPending(text) {
 ====================== */
 async function decideTaskStatus(text) {
   const prompt = `
-Decide ONLY one thing:
-Is the work completed or not?
-
-Reply ONLY:
+Decide ONLY:
 task_done or task_pending
 
 User reply:
@@ -168,30 +165,7 @@ User reply:
 }
 
 /* ======================
-   ✔ FINAL USER TEXT (GUJARATI FIRST)
-====================== */
-function isGujarati(text) {
-  return /[\u0A80-\u0AFF]/.test(text);
-}
-
-function getFinalUserStatement(userTexts = []) {
-  if (!userTexts.length) return "";
-
-  const cleaned = userTexts
-    .map(t => t.trim())
-    .filter(t => t.length > 5)
-    .filter(t => !/^(ok|okay|thank|thanks|on|yes|no)$/i.test(t));
-
-  if (!cleaned.length) return userTexts[userTexts.length - 1];
-
-  const gujarati = cleaned.filter(isGujarati);
-  return gujarati.length
-    ? gujarati[gujarati.length - 1]
-    : cleaned[cleaned.length - 1];
-}
-
-/* ======================
-   GOOGLE SHEET LOG
+   GOOGLE SHEET LOG (FULL CONVERSATION)
 ====================== */
 function logToSheet(s) {
   sheets.spreadsheets.values.append({
@@ -203,8 +177,8 @@ function logToSheet(s) {
         new Date(s.startTime).toISOString(),
         s.sid,
         s.userPhone,
-        s.agentTexts.join(" | "),
-        getFinalUserStatement(s.userTexts),
+        s.agentTexts.join(" | "),   // FULL agent flow
+        s.userTexts.join(" | "),    // ✅ FULL user flow
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
         "Completed"
@@ -279,7 +253,7 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  s.userTexts.push(text);
+  s.userTexts.push(text); // ✅ STORE EVERY USER UTTERANCE
 
   let next;
   if (s.state === "task_check") {
@@ -334,5 +308,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent (FINAL STABLE) READY");
+  console.log("✅ Gujarati AI Voice Agent (FULL CONVERSATION LOGGING) READY");
 });
