@@ -1,5 +1,5 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – FINAL HUMAN-LIKE VERSION
+ * GUJARATI AI VOICE AGENT – FINAL STABLE VERSION
  * Outbound Only | Twilio + Groq + Google TTS
  *************************************************/
 
@@ -123,7 +123,7 @@ async function preloadAll() {
    RULE-BASED PENDING DETECTION
 ====================== */
 function isClearlyPending(text) {
-  const patterns = [
+  return [
     "નથી થયું",
     "પૂર્ણ નથી",
     "હજુ કામ",
@@ -132,8 +132,7 @@ function isClearlyPending(text) {
     "અટક્યું",
     "થઈ રહ્યું છે",
     "પક્યું નથી"
-  ];
-  return patterns.some(p => text.includes(p));
+  ].some(p => text.includes(p));
 }
 
 /* ======================
@@ -141,19 +140,14 @@ function isClearlyPending(text) {
 ====================== */
 async function decideTaskStatus(text) {
   const prompt = `
-Decide only one thing:
-Has the work been completed or not?
-
-User reply (Gujarati):
-"${text}"
-
-Rules:
-- NOT completed → task_pending
-- completed → task_done
-- unsure → task_pending
+Decide ONLY one thing:
+Is the work completed or not?
 
 Reply ONLY:
 task_done or task_pending
+
+User reply:
+"${text}"
 `;
 
   const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -174,19 +168,26 @@ task_done or task_pending
 }
 
 /* ======================
-   CLEAN USER STATEMENT (KEY FIX)
+   ✔ FINAL USER TEXT (GUJARATI FIRST)
 ====================== */
+function isGujarati(text) {
+  return /[\u0A80-\u0AFF]/.test(text);
+}
+
 function getFinalUserStatement(userTexts = []) {
   if (!userTexts.length) return "";
 
-  const meaningful = userTexts.filter(t =>
-    t.length > 6 &&
-    !/^(ok|okay|thank|thanks|on|yes|no)$/i.test(t.trim())
-  );
+  const cleaned = userTexts
+    .map(t => t.trim())
+    .filter(t => t.length > 5)
+    .filter(t => !/^(ok|okay|thank|thanks|on|yes|no)$/i.test(t));
 
-  return meaningful.length
-    ? meaningful[meaningful.length - 1]
-    : userTexts[userTexts.length - 1];
+  if (!cleaned.length) return userTexts[userTexts.length - 1];
+
+  const gujarati = cleaned.filter(isGujarati);
+  return gujarati.length
+    ? gujarati[gujarati.length - 1]
+    : cleaned[cleaned.length - 1];
 }
 
 /* ======================
@@ -203,7 +204,7 @@ function logToSheet(s) {
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
-        getFinalUserStatement(s.userTexts), // ✅ FIXED
+        getFinalUserStatement(s.userTexts),
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
         "Completed"
@@ -333,5 +334,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent (Clean Logging) READY");
+  console.log("✅ Gujarati AI Voice Agent (FINAL STABLE) READY");
 });
