@@ -1,6 +1,5 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – GUJARATI ONLY LOGGING
- * Full Conversation | Outbound | Stable
+ * GUJARATI AI VOICE AGENT – AGENT & USER SYMMETRIC LOGGING
  *************************************************/
 
 import express from "express";
@@ -88,11 +87,6 @@ const FLOW = {
     prompt:
       "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી જ સંપર્ક કરશે.",
     end: true
-  },
-  end_no_time: {
-    prompt:
-      "બરાબર. કોઈ સમસ્યા નથી. આપનો સમય આપવા બદલ આભાર.",
-    end: true
   }
 };
 
@@ -116,52 +110,21 @@ async function preloadAll() {
   for (const k in FLOW) {
     await generateAudio(FLOW[k].prompt, `${k}.mp3`);
   }
-  await generateAudio("કૃપા કરીને ફરીથી કહેશો?", "retry.mp3");
 }
 
 /* ======================
-   RULE-BASED PENDING
+   HELPERS
 ====================== */
-function isClearlyPending(text) {
-  return [
-    "નથી થયું",
-    "પૂર્ણ નથી",
-    "હજુ કામ",
-    "બાકી",
-    "ચાલુ છે",
-    "અટક્યું",
-    "થઈ રહ્યું છે",
-    "પક્યું નથી"
-  ].some(p => text.includes(p));
+function isGujarati(text) {
+  return /[\u0A80-\u0AFF]/.test(text);
 }
 
-/* ======================
-   LLM – ONLY FOR task_check
-====================== */
-async function decideTaskStatus(text) {
-  const prompt = `
-Decide ONLY:
-task_done or task_pending
-
-User reply:
-"${text}"
-`;
-
-  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0
-    })
-  });
-
-  const j = await r.json();
-  return j.choices?.[0]?.message?.content?.trim();
+function cleanGujarati(text) {
+  return text
+    .split(" ")
+    .filter(w => isGujarati(w))
+    .join(" ")
+    .trim();
 }
 
 /* ======================
@@ -178,7 +141,7 @@ function logToSheet(s) {
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
-        s.userTexts.join(" | "), // ✅ GUJARATI ONLY FULL FLOW
+        s.userTexts.join(" | "),
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
         "Completed"
@@ -192,7 +155,6 @@ function logToSheet(s) {
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
-  if (!to) return res.status(400).json({ error: "Missing to" });
 
   const call = await twilioClient.calls.create({
     to,
@@ -210,10 +172,11 @@ app.post("/call", async (req, res) => {
     state: "intro",
     agentTexts: [],
     userTexts: [],
+    userBuffer: [],
     result: ""
   });
 
-  res.json({ status: "calling", sid: call.sid });
+  res.json({ status: "calling" });
 });
 
 /* ======================
@@ -221,8 +184,6 @@ app.post("/call", async (req, res) => {
 ====================== */
 app.post("/answer", (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  if (!s) return res.sendStatus(200);
-
   s.agentTexts.push(FLOW.intro.prompt);
 
   res.type("text/xml").send(`
@@ -241,32 +202,22 @@ app.post("/answer", (req, res) => {
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  if (!s) return res.send("<Response><Hangup/></Response>");
+  const raw = (req.body.SpeechResult || "").trim();
 
-  const text = (req.body.SpeechResult || "").trim();
-  if (!text) {
-    return res.send(`
-<Response>
-  <Play>${BASE_URL}/audio/retry.mp3</Play>
-  <Gather input="speech" action="${BASE_URL}/listen"/>
-</Response>
-`);
+  if (raw && isGujarati(raw)) {
+    s.userBuffer.push(raw);
   }
 
-  // ✅ STORE ONLY GUJARATI USER SPEECH
-  if (/[\u0A80-\u0AFF]/.test(text)) {
-    s.userTexts.push(text);
-  }
+  let next =
+    s.state === "intro" ? "task_check" :
+    s.state === "task_check" && raw.includes("નથી") ? "task_pending" :
+    s.state === "task_pending" ? "problem_recorded" :
+    "task_done";
 
-  let next;
-  if (s.state === "task_check") {
-    next = isClearlyPending(text)
-      ? "task_pending"
-      : await decideTaskStatus(text);
-  } else if (s.state === "task_pending") {
-    next = "problem_recorded";
-  } else {
-    next = "task_check";
+  // 🔐 BEFORE moving to next state, commit user sentence
+  if (s.userBuffer.length) {
+    s.userTexts.push(cleanGujarati(s.userBuffer.join(" ")));
+    s.userBuffer = [];
   }
 
   s.agentTexts.push(FLOW[next].prompt);
@@ -275,26 +226,15 @@ app.post("/listen", async (req, res) => {
     s.result = next;
     logToSheet(s);
     sessions.delete(s.sid);
-    return res.send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Hangup/>
-</Response>
-`);
+    return res.send(`<Response><Play>${BASE_URL}/audio/${next}.mp3</Play><Hangup/></Response>`);
   }
 
   s.state = next;
-
-  res.send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" action="${BASE_URL}/listen"/>
-</Response>
-`);
+  res.send(`<Response><Play>${BASE_URL}/audio/${next}.mp3</Play><Gather input="speech" action="${BASE_URL}/listen"/></Response>`);
 });
 
 /* ======================
-   CALL END (ABANDONED)
+   CALL END
 ====================== */
 app.post("/call-status", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -311,5 +251,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent (Gujarati-only logging) READY");
+  console.log("✅ Gujarati AI Voice Agent – Agent/User symmetric logging READY");
 });
