@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – OUTBOUND READY
- * Twilio Voice + Groq LLM + Google TTS + Sheets
+ * GUJARATI AI VOICE AGENT – FINAL STABLE VERSION
+ * Outbound + Inbound | Twilio + Groq + Google TTS
  *************************************************/
 
 import express from "express";
@@ -27,7 +27,7 @@ const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   TWILIO
+   TWILIO CLIENT
 ====================== */
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
@@ -60,12 +60,12 @@ if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
 app.use("/audio", express.static(AUDIO_DIR));
 
 /* ======================
-   CALL MEMORY
+   CALL SESSION MEMORY
 ====================== */
-const calls = new Map();
+const callSessions = new Map();
 
 /* ======================
-   FIXED SCRIPT FLOW
+   FIXED CONVERSATION SCRIPT
 ====================== */
 const FLOW = {
   intro: {
@@ -103,7 +103,7 @@ const FLOW = {
 };
 
 /* ======================
-   TTS PRELOAD
+   TTS AUDIO CACHE
 ====================== */
 async function generateAudio(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -118,23 +118,23 @@ async function generateAudio(text, file) {
   fs.writeFileSync(filePath, res.audioContent);
 }
 
-async function preloadAll() {
-  for (const k in FLOW) {
-    await generateAudio(FLOW[k].prompt, `${k}.mp3`);
+async function preloadAllAudio() {
+  for (const key in FLOW) {
+    await generateAudio(FLOW[key].prompt, `${key}.mp3`);
   }
   await generateAudio("કૃપા કરીને ફરીથી કહેશો?", "retry.mp3");
 }
 
 /* ======================
-   LLM INTENT CLASSIFIER
+   LLM INTENT DETECTION
 ====================== */
 async function detectNextState(currentState, userText) {
   const prompt = `
-You are a Gujarati voice-call intent classifier.
+You are a Gujarati phone-call intent classifier.
 
 Current step: ${currentState}
 
-Valid transitions:
+Allowed transitions:
 intro → task_check | end_no_time
 task_check → task_done | task_pending
 task_pending → problem_recorded
@@ -164,22 +164,22 @@ task_check, task_done, task_pending, problem_recorded, end_no_time, unknown
 }
 
 /* ======================
-   GOOGLE SHEET LOG
+   GOOGLE SHEET LOGGING
 ====================== */
-function logToSheet(call) {
+function logToSheet(session) {
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: "Call_Logs!A:H",
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
-        new Date(call.startTime).toISOString(),
-        call.sid,
-        call.from,
-        call.agentTexts.join(" | "),
-        call.userTexts.join(" | "),
-        call.result,
-        Math.floor((Date.now() - call.startTime) / 1000),
+        new Date(session.startTime).toISOString(),
+        session.sid,
+        session.from,
+        session.agentTexts.join(" | "),
+        session.userTexts.join(" | "),
+        session.result,
+        Math.floor((Date.now() - session.startTime) / 1000),
         "Completed"
       ]]
     }
@@ -192,16 +192,30 @@ function logToSheet(call) {
 app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
-    if (!to) return res.status(400).json({ error: "Missing 'to' number" });
 
-    const call = await twilioClient.calls.create({
+    if (!to) {
+      return res.status(400).json({ error: "Missing 'to' number" });
+    }
+
+    if (!process.env.TWILIO_FROM_NUMBER) {
+      return res.status(500).json({
+        error: "TWILIO_FROM_NUMBER not set in environment"
+      });
+    }
+
+    const twilioCall = await twilioClient.calls.create({
       to,
       from: process.env.TWILIO_FROM_NUMBER,
       url: `${BASE_URL}/answer`,
       method: "POST"
     });
 
-    res.json({ status: "calling", sid: call.sid, to });
+    res.json({
+      status: "calling",
+      sid: twilioCall.sid,
+      to
+    });
+
   } catch (err) {
     console.error("Outbound call error:", err);
     res.status(500).json({ error: err.message });
@@ -209,12 +223,12 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   ANSWER (CALL START)
+   ANSWER WEBHOOK
 ====================== */
 app.post("/answer", (req, res) => {
   const sid = req.body.CallSid;
 
-  calls.set(sid, {
+  callSessions.set(sid, {
     sid,
     state: "intro",
     startTime: Date.now(),
@@ -237,13 +251,16 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (LLM DRIVEN)
+   LISTEN LOOP (LLM DRIVEN)
 ====================== */
 app.post("/listen", async (req, res) => {
-  const call = calls.get(req.body.CallSid);
-  if (!call) return res.type("text/xml").send("<Response><Hangup/></Response>");
+  const session = callSessions.get(req.body.CallSid);
+  if (!session) {
+    return res.type("text/xml").send("<Response><Hangup/></Response>");
+  }
 
   const text = (req.body.SpeechResult || "").trim();
+
   if (!text) {
     return res.type("text/xml").send(`
 <Response>
@@ -257,10 +274,11 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  call.userTexts.push(text);
+  session.userTexts.push(text);
 
-  const nextId = await detectNextState(call.state, text);
-  if (!FLOW[nextId]) {
+  const nextState = await detectNextState(session.state, text);
+
+  if (!FLOW[nextState]) {
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/retry.mp3</Play>
@@ -273,26 +291,26 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  call.agentTexts.push(FLOW[nextId].prompt);
+  session.agentTexts.push(FLOW[nextState].prompt);
 
-  if (FLOW[nextId].end) {
-    call.result = nextId;
-    logToSheet(call);
-    calls.delete(call.sid);
+  if (FLOW[nextState].end) {
+    session.result = nextState;
+    logToSheet(session);
+    callSessions.delete(session.sid);
 
     return res.type("text/xml").send(`
 <Response>
-  <Play>${BASE_URL}/audio/${nextId}.mp3</Play>
+  <Play>${BASE_URL}/audio/${nextState}.mp3</Play>
   <Hangup/>
 </Response>
 `);
   }
 
-  call.state = nextId;
+  session.state = nextState;
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${BASE_URL}/audio/${nextId}.mp3</Play>
+  <Play>${BASE_URL}/audio/${nextState}.mp3</Play>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen"
     method="POST"
@@ -306,6 +324,6 @@ app.post("/listen", async (req, res) => {
    START SERVER
 ====================== */
 app.listen(PORT, async () => {
-  await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent running (Outbound + LLM)");
+  await preloadAllAudio();
+  console.log("✅ Gujarati AI Voice Agent running (Final Stable)");
 });
