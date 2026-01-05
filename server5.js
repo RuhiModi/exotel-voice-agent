@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – STABLE + HUMANATIC
- * Agent_Text & User_Text SAME LOGIC (BUFFERED)
+ * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
+ * Confidence | Retry | Escalation ENABLED
  *************************************************/
 
 import express from "express";
@@ -74,6 +74,14 @@ const FLOW = {
     prompt:
       "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમિયાન આપનું કામ પૂર્ણ થયું છે કે નહીં?"
   },
+  retry_task_check: {
+    prompt:
+      "માફ કરશો, હું સ્પષ્ટ સમજી શક્યો નથી. કૃપા કરીને ફરીથી કહેશો — આપનું કામ પૂર્ણ થયું છે કે નહીં?"
+  },
+  confirm_task: {
+    prompt:
+      "ફક્ત પુષ્ટિ માટે પૂછું છું — આપનું કામ પૂર્ણ થયું છે કે હજુ બાકી છે?"
+  },
   task_done: {
     prompt:
       "ખૂબ આનંદ થયો કે આપનું કામ પૂર્ણ થયું છે. આભાર.",
@@ -86,6 +94,11 @@ const FLOW = {
   problem_recorded: {
     prompt:
       "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી જ સંપર્ક કરશે.",
+    end: true
+  },
+  escalate: {
+    prompt:
+      "માફ કરશો, તમારી માહિતી સ્પષ્ટ રીતે મળી નથી. અમે તમને માનવીય સહાયક સાથે જોડશું.",
     end: true
   }
 };
@@ -120,21 +133,6 @@ function hasGujarati(text) {
   return /[\u0A80-\u0AFF]/.test(text);
 }
 
-function isTaskPendingGujarati(text) {
-  const signals = [
-    "નથી",
-    "નથી થયું",
-    "હજુ",
-    "બાકી",
-    "પૂર્ણ નથી",
-    "થોડું થયું",
-    "ચાલુ છે",
-    "અટક્યું"
-  ];
-  return signals.some(s => text.includes(s));
-}
-
-// Normalize common English → Gujarati (deterministic)
 function normalizeMixedGujarati(text) {
   const dict = {
     aadhar: "આધાર",
@@ -159,13 +157,28 @@ function normalizeMixedGujarati(text) {
   return normalized;
 }
 
+/* 🔑 Intent detection with confidence */
+function detectTaskStatus(text) {
+  const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
+  const done = ["પૂર્ણ થયું", "થઈ ગયું", "થયું છે", "મળી ગયું"];
+
+  const p = pending.some(w => text.includes(w));
+  const d = done.some(w => text.includes(w));
+
+  if (p && !d) return { status: "PENDING", confidence: 90 };
+  if (d && !p) return { status: "DONE", confidence: 90 };
+  if (p && d) return { status: "UNCLEAR", confidence: 40 };
+
+  return { status: "UNCLEAR", confidence: 30 };
+}
+
 /* ======================
    GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: "Call_Logs!A:H",
+    range: "Call_Logs!A:I",
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
@@ -176,7 +189,8 @@ function logToSheet(s) {
         s.userTexts.join(" | "),
         s.result,
         Math.floor((Date.now() - s.startTime) / 1000),
-        "Completed"
+        "Completed",
+        s.confidenceScore ?? 0
       ]]
     }
   }).catch(console.error);
@@ -204,7 +218,9 @@ app.post("/call", async (req, res) => {
     state: "intro",
     agentTexts: [],
     userTexts: [],
-    userBuffer: [], // ✅ NEW
+    userBuffer: [],
+    unclearCount: 0,
+    confidenceScore: 0,
     result: ""
   });
 
@@ -229,37 +245,39 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (HUMANATIC FIX)
+   LISTEN (FINAL HUMANATIC LOGIC)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
-  if (!raw) {
-    return res.type("text/xml").send(`
-<Response>
-  <Gather input="speech" language="gu-IN"
-    timeout="8" speechTimeout="auto"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
+  if (raw && hasGujarati(raw)) {
+    s.userBuffer.push(normalizeMixedGujarati(raw));
   }
 
-  // 🧠 ACCUMULATE user speech (slow / paused safe)
-  if (hasGujarati(raw)) {
-    const normalized = normalizeMixedGujarati(raw);
-    s.userBuffer.push(normalized);
+  let next = null;
+
+  if (s.state === "intro") {
+    next = "task_check";
+  }
+  else if (s.state === "task_check" || s.state === "retry_task_check" || s.state === "confirm_task") {
+    const { status, confidence } = detectTaskStatus(raw);
+    s.confidenceScore = confidence;
+
+    if (status === "PENDING") next = "task_pending";
+    else if (status === "DONE") next = "task_done";
+    else {
+      s.unclearCount += 1;
+
+      if (s.unclearCount === 1) next = "retry_task_check";
+      else if (s.unclearCount === 2) next = "confirm_task";
+      else next = "escalate";
+    }
+  }
+  else {
+    next = "problem_recorded";
   }
 
-  let next;
-  if (s.state === "intro") next = "task_check";
-  else if (s.state === "task_check")
-    next = isTaskPendingGujarati(raw)
-      ? "task_pending"
-      : "task_done";
-  else next = "problem_recorded";
-
-  // ✅ COMMIT full user answer ONCE
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
@@ -308,5 +326,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – HUMANATIC & STABLE READY");
+  console.log("✅ Gujarati AI Voice Agent – CONFIDENT & ESCALATION READY");
 });
