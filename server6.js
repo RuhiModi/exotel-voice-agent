@@ -1,5 +1,5 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – FINAL STABLE VERSION
+ * GUJARATI AI VOICE AGENT – FINAL PRODUCTION FILE
  * Outbound + Inbound | Twilio + Groq + Google TTS
  *************************************************/
 
@@ -65,7 +65,7 @@ app.use("/audio", express.static(AUDIO_DIR));
 const callSessions = new Map();
 
 /* ======================
-   FIXED CONVERSATION SCRIPT
+   FIXED SCRIPT FLOW
 ====================== */
 const FLOW = {
   intro: {
@@ -103,7 +103,7 @@ const FLOW = {
 };
 
 /* ======================
-   TTS AUDIO CACHE
+   TTS CACHE
 ====================== */
 async function generateAudio(text, file) {
   const filePath = path.join(AUDIO_DIR, file);
@@ -126,7 +126,7 @@ async function preloadAllAudio() {
 }
 
 /* ======================
-   LLM INTENT DETECTION
+   LLM INTENT CLASSIFIER
 ====================== */
 async function detectNextState(currentState, userText) {
   const prompt = `
@@ -137,13 +137,12 @@ Current step: ${currentState}
 Allowed transitions:
 intro → task_check | end_no_time
 task_check → task_done | task_pending
-task_pending → problem_recorded
 
 User said (Gujarati):
 "${userText}"
 
 Reply ONLY with:
-task_check, task_done, task_pending, problem_recorded, end_no_time, unknown
+task_check, task_done, task_pending, end_no_time, unknown
 `;
 
   const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -164,7 +163,7 @@ task_check, task_done, task_pending, problem_recorded, end_no_time, unknown
 }
 
 /* ======================
-   GOOGLE SHEET LOGGING
+   GOOGLE SHEET LOG
 ====================== */
 function logToSheet(session) {
   sheets.spreadsheets.values.append({
@@ -193,29 +192,21 @@ app.post("/call", async (req, res) => {
   try {
     const { to } = req.body;
 
-    if (!to) {
-      return res.status(400).json({ error: "Missing 'to' number" });
-    }
-
-    if (!process.env.TWILIO_FROM_NUMBER) {
-      return res.status(500).json({
-        error: "TWILIO_FROM_NUMBER not set in environment"
-      });
-    }
+    if (!to) return res.status(400).json({ error: "Missing 'to' number" });
+    if (!process.env.TWILIO_FROM_NUMBER)
+      return res.status(500).json({ error: "TWILIO_FROM_NUMBER not set" });
 
     const twilioCall = await twilioClient.calls.create({
       to,
       from: process.env.TWILIO_FROM_NUMBER,
       url: `${BASE_URL}/answer`,
-      method: "POST"
+      method: "POST",
+      statusCallback: `${BASE_URL}/call-status`,
+      statusCallbackEvent: ["completed"],
+      statusCallbackMethod: "POST"
     });
 
-    res.json({
-      status: "calling",
-      sid: twilioCall.sid,
-      to
-    });
-
+    res.json({ status: "calling", sid: twilioCall.sid, to });
   } catch (err) {
     console.error("Outbound call error:", err);
     res.status(500).json({ error: err.message });
@@ -251,16 +242,13 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN LOOP (LLM DRIVEN)
+   LISTEN LOOP (FIXED)
 ====================== */
 app.post("/listen", async (req, res) => {
   const session = callSessions.get(req.body.CallSid);
-  if (!session) {
-    return res.type("text/xml").send("<Response><Hangup/></Response>");
-  }
+  if (!session) return res.type("text/xml").send("<Response><Hangup/></Response>");
 
   const text = (req.body.SpeechResult || "").trim();
-
   if (!text) {
     return res.type("text/xml").send(`
 <Response>
@@ -276,7 +264,14 @@ app.post("/listen", async (req, res) => {
 
   session.userTexts.push(text);
 
-  const nextState = await detectNextState(session.state, text);
+  let nextState;
+
+  // 🔒 HARD STOP LOGIC
+  if (session.state === "task_pending") {
+    nextState = "problem_recorded";
+  } else {
+    nextState = await detectNextState(session.state, text);
+  }
 
   if (!FLOW[nextState]) {
     return res.type("text/xml").send(`
@@ -321,9 +316,25 @@ app.post("/listen", async (req, res) => {
 });
 
 /* ======================
+   CALL STATUS CALLBACK
+====================== */
+app.post("/call-status", (req, res) => {
+  const sid = req.body.CallSid;
+  const session = callSessions.get(sid);
+
+  if (session && !session.result) {
+    session.result = "abandoned";
+    logToSheet(session);
+    callSessions.delete(sid);
+  }
+
+  res.sendStatus(200);
+});
+
+/* ======================
    START SERVER
 ====================== */
 app.listen(PORT, async () => {
   await preloadAllAudio();
-  console.log("✅ Gujarati AI Voice Agent running (Final Stable)");
+  console.log("✅ Gujarati AI Voice Agent running (Production Ready)");
 });
