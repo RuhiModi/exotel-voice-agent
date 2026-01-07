@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – EXOTEL VERSION
- * Two-way AI | Confidence | Retry | Escalation
+ * GUJARATI AI VOICE AGENT – EXOTEL + GROQ LLM
+ * Two-way AI | STT | LLM | TTS | Retry | Escalation
  *************************************************/
 
 import express from "express";
@@ -11,6 +11,7 @@ import path from "path";
 import fetch from "node-fetch";
 import { fileURLToPath } from "url";
 import textToSpeech from "@google-cloud/text-to-speech";
+import speech from "@google-cloud/speech";
 import { google } from "googleapis";
 
 dotenv.config();
@@ -26,9 +27,10 @@ const PORT = process.env.PORT || 10000;
 const BASE_URL = process.env.BASE_URL;
 
 /* ======================
-   GOOGLE TTS
+   GOOGLE CLIENTS
 ====================== */
 const ttsClient = new textToSpeech.TextToSpeechClient();
+const sttClient = new speech.SpeechClient();
 
 /* ======================
    GOOGLE SHEETS
@@ -91,16 +93,65 @@ async function preloadAll() {
 }
 
 /* ======================
-   INTENT LOGIC (UNCHANGED)
+   GROQ LLM – INTENT CLASSIFIER
 ====================== */
-function detectTaskStatus(text) {
-  const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
-  const done = ["પૂર્ણ થયું", "થઈ ગયું", "થયું છે", "મળી ગયું"];
-  const p = pending.some(w => text.includes(w));
-  const d = done.some(w => text.includes(w));
-  if (p && !d) return { status: "PENDING", confidence: 90 };
-  if (d && !p) return { status: "DONE", confidence: 90 };
-  return { status: "UNCLEAR", confidence: 30 };
+async function classifyWithLLM(text) {
+  const prompt = `
+User said (Gujarati or mixed):
+"${text}"
+
+Classify intent as ONE of:
+DONE – work completed
+PENDING – work not completed
+UNCLEAR – cannot understand
+
+Reply in JSON only:
+{ "intent": "...", "confidence": number }
+`;
+
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "llama3-70b-8192",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0
+    })
+  });
+
+  const data = await r.json();
+  try {
+    return JSON.parse(data.choices[0].message.content);
+  } catch {
+    return { intent: "UNCLEAR", confidence: 30 };
+  }
+}
+
+/* ======================
+   GOOGLE SHEET LOG
+====================== */
+function logToSheet(s) {
+  sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Call_Logs!A:I",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date(s.startTime).toISOString(),
+        s.sid,
+        s.userPhone,
+        s.agentTexts.join(" | "),
+        s.userTexts.join(" | "),
+        s.result,
+        Math.floor((Date.now() - s.startTime) / 1000),
+        "Completed",
+        s.confidenceScore ?? 0
+      ]]
+    }
+  }).catch(console.error);
 }
 
 /* ======================
@@ -159,11 +210,7 @@ app.post("/exotel/answer", (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/intro.mp3</Play>
-  <Record
-    action="${BASE_URL}/exotel/recording"
-    maxLength="8"
-    playBeep="false"
-  />
+  <Record action="${BASE_URL}/exotel/recording" maxLength="8" playBeep="false"/>
 </Response>
 `);
 });
@@ -176,15 +223,59 @@ app.post("/exotel/recording", async (req, res) => {
   const recordingUrl = req.body.RecordingUrl;
   const s = sessions.get(callId);
 
-  // TODO:
-  // 1. Download recordingUrl
-  // 2. Send to Google STT
-  // 3. Get text
-  // 4. Run detectTaskStatus()
-  // 5. Decide next FLOW
-  // 6. Respond with <Play> next audio or <Hangup>
+  const audioRes = await fetch(recordingUrl);
+  const audioBuffer = await audioRes.arrayBuffer();
 
-  res.type("text/xml").send(`<Response><Hangup/></Response>`);
+  const [stt] = await sttClient.recognize({
+    audio: { content: Buffer.from(audioBuffer).toString("base64") },
+    config: { encoding: "LINEAR16", languageCode: "gu-IN" }
+  });
+
+  const transcript =
+    stt.results?.map(r => r.alternatives[0].transcript).join(" ") || "";
+
+  if (transcript) s.userTexts.push(transcript);
+
+  let next = null;
+
+  if (s.state === "intro") {
+    next = "task_check";
+  } else {
+    const { intent, confidence } = await classifyWithLLM(transcript);
+    s.confidenceScore = confidence;
+
+    if (intent === "DONE") next = "task_done";
+    else if (intent === "PENDING") next = "task_pending";
+    else {
+      s.unclearCount += 1;
+      if (s.unclearCount === 1) next = "retry_task_check";
+      else if (s.unclearCount === 2) next = "confirm_task";
+      else next = "escalate";
+    }
+  }
+
+  s.agentTexts.push(FLOW[next].prompt);
+
+  if (FLOW[next].end) {
+    s.result = next;
+    logToSheet(s);
+    sessions.delete(callId);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Hangup/>
+</Response>
+`);
+  }
+
+  s.state = next;
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Record action="${BASE_URL}/exotel/recording" maxLength="8" playBeep="false"/>
+</Response>
+`);
 });
 
 /* ======================
@@ -192,5 +283,5 @@ app.post("/exotel/recording", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – EXOTEL READY");
+  console.log("✅ Gujarati AI Voice Agent – EXOTEL + GROQ LLM READY");
 });
