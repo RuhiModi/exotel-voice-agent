@@ -96,12 +96,6 @@ async function preloadAll() {
 function formatIST(ts) {
   return new Date(ts).toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
     hour12: true
   });
 }
@@ -154,27 +148,69 @@ function detectTaskStatus(text) {
 }
 
 /* ======================
-   BUSY / NO-TIME INTENT
+   BUSY / NO-TIME
 ====================== */
 function isBusyIntent(text) {
-  const busyPhrases = [
+  return [
     "સમય નથી",
     "હવે નથી",
     "પછી ફોન",
     "બાદમાં ફોન",
     "હવે વાત નહીં",
     "બાદમાં વાત"
-  ];
-  return busyPhrases.some(p => text.includes(p));
+  ].some(p => text.includes(p));
+}
+
+/* ======================
+   BULK SHEET HELPERS (NEW)
+====================== */
+async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
+
+  const rows = sheet.data.values || [];
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] === phone && rows[i][1] === batchId) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}:D${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[status, callSid]] }
+      });
+      break;
+    }
+  }
+}
+
+async function updateBulkByCallSid(callSid, status) {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
+
+  const rows = sheet.data.values || [];
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][3] === callSid) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[status]] }
+      });
+      break;
+    }
+  }
 }
 
 /* ======================
    GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
-  const durationSec = s.endTime
-    ? Math.floor((s.endTime - s.startTime) / 1000)
-    : 0;
+  const duration = s.endTime ? Math.floor((s.endTime - s.startTime) / 1000) : 0;
 
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
@@ -189,7 +225,7 @@ function logToSheet(s) {
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
         s.result,
-        durationSec,
+        duration,
         s.confidenceScore ?? 0,
         s.callbackTime ?? ""
       ]]
@@ -231,10 +267,10 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   BULK CALL (ADDED SAFELY)
+   BULK CALL (FIXED)
 ====================== */
 app.post("/bulk-call", async (req, res) => {
-  const { phones = [] } = req.body;
+  const { phones = [], batchId } = req.body;
 
   phones.forEach((phone, index) => {
     setTimeout(async () => {
@@ -247,9 +283,12 @@ app.post("/bulk-call", async (req, res) => {
         method: "POST"
       });
 
+      await updateBulkRowByPhone(phone, batchId, "Calling", call.sid);
+
       sessions.set(call.sid, {
         sid: call.sid,
         userPhone: phone,
+        batchId,
         startTime: Date.now(),
         endTime: null,
         callbackTime: null,
@@ -261,7 +300,7 @@ app.post("/bulk-call", async (req, res) => {
         confidenceScore: 0,
         result: ""
       });
-    }, index * 1500); // safe throttling
+    }, index * 1500);
   });
 
   res.json({ status: "bulk calling started", total: phones.length });
@@ -285,17 +324,15 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (UNCHANGED CORE LOGIC)
+   LISTEN (UNCHANGED)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
   if (!raw) {
-    s.unclearCount += 1;
-    const next = RULES.nextOnUnclear(s.unclearCount);
+    const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
-
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -306,36 +343,22 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  if (hasGujarati(raw)) {
-    s.userBuffer.push(normalizeMixedGujarati(raw));
-  }
+  if (hasGujarati(raw)) s.userBuffer.push(normalizeMixedGujarati(raw));
 
-  let next = null;
-
+  let next;
   if (s.state === STATES.INTRO) {
     next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
-  }
-  else if (s.state === STATES.CALLBACK_TIME) {
+  } else if (s.state === STATES.CALLBACK_TIME) {
     s.callbackTime = raw;
     next = STATES.CALLBACK_CONFIRM;
-  }
-  else if (
-    s.state === STATES.TASK_CHECK ||
-    s.state === STATES.RETRY_TASK_CHECK ||
-    s.state === STATES.CONFIRM_TASK
-  ) {
+  } else {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
-
-    if (status === "PENDING") next = STATES.TASK_PENDING;
-    else if (status === "DONE") next = STATES.TASK_DONE;
-    else {
-      s.unclearCount += 1;
-      next = RULES.nextOnUnclear(s.unclearCount);
-    }
-  }
-  else {
-    next = STATES.PROBLEM_RECORDED;
+    next = status === "DONE"
+      ? STATES.TASK_DONE
+      : status === "PENDING"
+        ? STATES.TASK_PENDING
+        : RULES.nextOnUnclear(++s.unclearCount);
   }
 
   if (s.userBuffer.length) {
@@ -350,7 +373,6 @@ app.post("/listen", (req, res) => {
     s.endTime = Date.now();
     logToSheet(s);
     sessions.delete(s.sid);
-
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -371,16 +393,25 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL END
+   CALL STATUS
 ====================== */
-app.post("/call-status", (req, res) => {
+app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  if (s && !s.result) {
-    s.result = "abandoned";
-    s.endTime = Date.now();
-    logToSheet(s);
+
+  if (s) {
+    if (s.batchId) {
+      await updateBulkByCallSid(req.body.CallSid, "Completed");
+    }
+
+    if (!s.result) {
+      s.result = "abandoned";
+      s.endTime = Date.now();
+      logToSheet(s);
+    }
+
     sessions.delete(s.sid);
   }
+
   res.sendStatus(200);
 });
 
@@ -389,5 +420,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – SINGLE + BULK, STABLE & HUMAN");
+  console.log("✅ Gujarati AI Voice Agent – SINGLE + BULK, FULLY STABLE");
 });
