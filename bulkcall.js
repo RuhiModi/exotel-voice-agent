@@ -153,7 +153,7 @@ function detectTaskStatus(text) {
 }
 
 /* ======================
-   BUSY INTENT
+   BUSY / NO-TIME INTENT
 ====================== */
 function isBusyIntent(text) {
   const busyPhrases = [
@@ -177,7 +177,7 @@ function logToSheet(s) {
 
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: "Call_Logs!A:K",
+    range: "Call_Logs!A:J",
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
@@ -190,15 +190,14 @@ function logToSheet(s) {
         s.result,
         durationSec,
         s.confidenceScore ?? 0,
-        s.callbackTime ?? "",
-        s.batchId ?? ""
+        s.callbackTime ?? ""
       ]]
     }
   }).catch(console.error);
 }
 
 /* ======================
-   SINGLE CALL
+   OUTBOUND CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
@@ -215,7 +214,6 @@ app.post("/call", async (req, res) => {
   sessions.set(call.sid, {
     sid: call.sid,
     userPhone: to,
-    batchId: null,
     startTime: Date.now(),
     endTime: null,
     callbackTime: null,
@@ -271,7 +269,7 @@ app.post("/bulk-call", async (req, res) => {
       } catch (err) {
         console.error("Bulk call failed:", phone, err.message);
       }
-    }, index * 1500); // ⏱️ safe throttling
+    }, index * 1500);
   });
 
   res.json({
@@ -281,16 +279,141 @@ app.post("/bulk-call", async (req, res) => {
   });
 });
 
+
 /* ======================
-   ANSWER / LISTEN / CALL-STATUS
-   (UNCHANGED)
+   ANSWER
 ====================== */
-/* your existing answer, listen, call-status code remains exactly same */
+app.post("/answer", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  s.agentTexts.push(RESPONSES[STATES.INTRO].text);
+
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+});
+
+/* ======================
+   LISTEN
+====================== */
+app.post("/listen", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  const raw = (req.body.SpeechResult || "").trim();
+
+  /* Silence handling */
+  if (!raw) {
+    s.unclearCount += 1;
+    const next = RULES.nextOnUnclear(s.unclearCount);
+
+    s.agentTexts.push(RESPONSES[next].text);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+  }
+
+  if (hasGujarati(raw)) {
+    s.userBuffer.push(normalizeMixedGujarati(raw));
+  }
+
+  let next = null;
+
+  /* INTRO handling */
+  if (s.state === STATES.INTRO) {
+    if (isBusyIntent(raw)) {
+      next = STATES.CALLBACK_TIME;
+    } else {
+      next = STATES.TASK_CHECK;
+    }
+  }
+
+  /* CALLBACK TIME */
+  else if (s.state === STATES.CALLBACK_TIME) {
+    s.callbackTime = raw;
+    next = STATES.CALLBACK_CONFIRM;
+  }
+
+  /* MAIN FLOW */
+  else if (
+    s.state === STATES.TASK_CHECK ||
+    s.state === STATES.RETRY_TASK_CHECK ||
+    s.state === STATES.CONFIRM_TASK
+  ) {
+    const { status, confidence } = detectTaskStatus(raw);
+    s.confidenceScore = confidence;
+
+    if (status === "PENDING") next = STATES.TASK_PENDING;
+    else if (status === "DONE") next = STATES.TASK_DONE;
+    else {
+      s.unclearCount += 1;
+      next = RULES.nextOnUnclear(s.unclearCount);
+    }
+  }
+
+  /* FALLBACK */
+  else {
+    next = STATES.PROBLEM_RECORDED;
+  }
+
+  if (s.userBuffer.length) {
+    s.userTexts.push(s.userBuffer.join(" "));
+    s.userBuffer = [];
+  }
+
+  s.agentTexts.push(RESPONSES[next].text);
+
+  if (RESPONSES[next].end) {
+    s.result = next;
+    s.endTime = Date.now();
+    logToSheet(s);
+    sessions.delete(s.sid);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Hangup/>
+</Response>
+`);
+  }
+
+  s.state = next;
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+});
+
+/* ======================
+   CALL END
+====================== */
+app.post("/call-status", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  if (s && !s.result) {
+    s.result = "abandoned";
+    s.endTime = Date.now();
+    logToSheet(s);
+    sessions.delete(s.sid);
+  }
+  res.sendStatus(200);
+});
 
 /* ======================
    START
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – BULK CALL READY");
+  console.log("✅ Gujarati AI Voice Agent – CLEAN, HUMAN & CALLBACK-READY");
 });
