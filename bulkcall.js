@@ -91,7 +91,7 @@ async function preloadAll() {
 }
 
 /* ======================
-   TIME HELPERS (IST)
+   TIME HELPERS
 ====================== */
 function formatIST(ts) {
   return new Date(ts).toLocaleString("en-IN", {
@@ -143,12 +143,11 @@ function detectTaskStatus(text) {
   if (p && !d) return { status: "PENDING", confidence: 90 };
   if (d && !p) return { status: "DONE", confidence: 90 };
   if (p && d) return { status: "UNCLEAR", confidence: 40 };
-
   return { status: "UNCLEAR", confidence: 30 };
 }
 
 /* ======================
-   BUSY / NO-TIME
+   BUSY INTENT
 ====================== */
 function isBusyIntent(text) {
   return [
@@ -162,7 +161,7 @@ function isBusyIntent(text) {
 }
 
 /* ======================
-   BULK SHEET HELPERS (NEW)
+   BULK HELPERS (FIXED)
 ====================== */
 async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
   const sheet = await sheets.spreadsheets.values.get({
@@ -178,9 +177,11 @@ async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
         spreadsheetId: SHEET_ID,
         range: `Bulk_Calls!C${i + 1}:D${i + 1}`,
         valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[status, callSid]] }
+        requestBody: {
+          values: [[status, callSid || rows[i][3] || ""]]
+        }
       });
-      break;
+      return;
     }
   }
 }
@@ -201,7 +202,7 @@ async function updateBulkByCallSid(callSid, status) {
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[status]] }
       });
-      break;
+      return;
     }
   }
 }
@@ -210,7 +211,9 @@ async function updateBulkByCallSid(callSid, status) {
    GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
-  const duration = s.endTime ? Math.floor((s.endTime - s.startTime) / 1000) : 0;
+  const duration = s.endTime
+    ? Math.floor((s.endTime - s.startTime) / 1000)
+    : 0;
 
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
@@ -267,39 +270,46 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   BULK CALL (FIXED)
+   BULK CALL (FINAL FIX)
 ====================== */
 app.post("/bulk-call", async (req, res) => {
   const { phones = [], batchId } = req.body;
 
   phones.forEach((phone, index) => {
     setTimeout(async () => {
-      const call = await twilioClient.calls.create({
-        to: phone,
-        from: process.env.TWILIO_FROM_NUMBER,
-        url: `${BASE_URL}/answer`,
-        statusCallback: `${BASE_URL}/call-status`,
-        statusCallbackEvent: ["completed"],
-        method: "POST"
-      });
+      try {
+        await updateBulkRowByPhone(phone, batchId, "Calling");
 
-      await updateBulkRowByPhone(phone, batchId, "Calling", call.sid);
+        const call = await twilioClient.calls.create({
+          to: phone,
+          from: process.env.TWILIO_FROM_NUMBER,
+          url: `${BASE_URL}/answer`,
+          statusCallback: `${BASE_URL}/call-status`,
+          statusCallbackEvent: ["completed"],
+          method: "POST"
+        });
 
-      sessions.set(call.sid, {
-        sid: call.sid,
-        userPhone: phone,
-        batchId,
-        startTime: Date.now(),
-        endTime: null,
-        callbackTime: null,
-        state: STATES.INTRO,
-        agentTexts: [],
-        userTexts: [],
-        userBuffer: [],
-        unclearCount: 0,
-        confidenceScore: 0,
-        result: ""
-      });
+        await updateBulkRowByPhone(phone, batchId, "Calling", call.sid);
+
+        sessions.set(call.sid, {
+          sid: call.sid,
+          userPhone: phone,
+          batchId,
+          startTime: Date.now(),
+          endTime: null,
+          callbackTime: null,
+          state: STATES.INTRO,
+          agentTexts: [],
+          userTexts: [],
+          userBuffer: [],
+          unclearCount: 0,
+          confidenceScore: 0,
+          result: ""
+        });
+      } catch (e) {
+        console.error("Bulk call failed:", phone, e.message);
+        await updateBulkRowByPhone(phone, batchId, "Failed");
+      }
     }, index * 1500);
   });
 
@@ -324,7 +334,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (UNCHANGED)
+   LISTEN
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -393,14 +403,19 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS
+   CALL STATUS (FINAL)
 ====================== */
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
   if (s) {
     if (s.batchId) {
-      await updateBulkByCallSid(req.body.CallSid, "Completed");
+      await updateBulkRowByPhone(
+        s.userPhone,
+        s.batchId,
+        "Completed",
+        req.body.CallSid
+      );
     }
 
     if (!s.result) {
