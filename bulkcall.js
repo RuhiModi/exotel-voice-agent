@@ -136,11 +136,11 @@ function normalizeMixedGujarati(text) {
 }
 
 /* ======================
-   HELPERS for bulck call
+   BULK CALL STATUS HELPER
 ====================== */
 async function updateBulkCallStatus(phone, batchId, status) {
   try {
-    const sheet = sheets.spreadsheets.values.get({
+    const sheet = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range: "Bulk_Calls!A:C"
     });
@@ -148,21 +148,13 @@ async function updateBulkCallStatus(phone, batchId, status) {
     const rows = sheet.data.values || [];
 
     for (let i = 1; i < rows.length; i++) {
-      const rowPhone = rows[i][0];
-      const rowBatch = rows[i][1];
-
-      if (rowPhone === phone && rowBatch === batchId) {
-        const rowNumber = i + 1;
-
+      if (rows[i][0] === phone && rows[i][1] === batchId) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
-          range: `Bulk_Calls!C${rowNumber}`,
+          range: `Bulk_Calls!C${i + 1}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: [[status]]
-          }
+          requestBody: { values: [[status]] }
         });
-
         break;
       }
     }
@@ -189,18 +181,17 @@ function detectTaskStatus(text) {
 }
 
 /* ======================
-   BUSY / NO-TIME INTENT
+   BUSY INTENT
 ====================== */
 function isBusyIntent(text) {
-  const busyPhrases = [
+  return [
     "સમય નથી",
     "હવે નથી",
     "પછી ફોન",
     "બાદમાં ફોન",
     "હવે વાત નહીં",
     "બાદમાં વાત"
-  ];
-  return busyPhrases.some(p => text.includes(p));
+  ].some(p => text.includes(p));
 }
 
 /* ======================
@@ -233,48 +224,10 @@ function logToSheet(s) {
 }
 
 /* ======================
-   OUTBOUND CALL
+   BULK CALL API
 ====================== */
-app.post("/call", async (req, res) => {
-  const { to } = req.body;
-
-  const call = await twilioClient.calls.create({
-    to,
-    from: process.env.TWILIO_FROM_NUMBER,
-    url: `${BASE_URL}/answer`,
-    statusCallback: `${BASE_URL}/call-status`,
-    statusCallbackEvent: ["completed"],
-    method: "POST"
-  });
-
-  sessions.set(call.sid, {
-    sid: call.sid,
-    userPhone: to,
-    startTime: Date.now(),
-    endTime: null,
-    callbackTime: null,
-    state: STATES.INTRO,
-    agentTexts: [],
-    userTexts: [],
-    userBuffer: [],
-    unclearCount: 0,
-    confidenceScore: 0,
-    result: ""
-  });
-
-  res.json({ status: "calling" });
-});
-
-/* ======================
-   BULK CALL (NEW)
-====================== */
-app.post("/call-status", async (req, res) => {
-
+app.post("/bulk-call", async (req, res) => {
   const { phones, batchId } = req.body;
-
-  if (!Array.isArray(phones) || phones.length === 0) {
-    return res.status(400).json({ error: "No phone numbers provided" });
-  }
 
   phones.forEach((phone, index) => {
     setTimeout(async () => {
@@ -287,7 +240,8 @@ app.post("/call-status", async (req, res) => {
           statusCallbackEvent: ["completed"],
           method: "POST"
         });
-      await updateBulkCallStatus(phone, batchId, "Calling");
+
+        await updateBulkCallStatus(phone, batchId, "Calling");
 
         sessions.set(call.sid, {
           sid: call.sid,
@@ -310,13 +264,8 @@ app.post("/call-status", async (req, res) => {
     }, index * 1500);
   });
 
-  res.json({
-    message: "Bulk call started",
-    batchId,
-    total: phones.length
-  });
+  res.json({ message: "Bulk call started", batchId });
 });
-
 
 /* ======================
    ANSWER
@@ -336,120 +285,23 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN
+   CALL STATUS (FIXED)
 ====================== */
-app.post("/listen", (req, res) => {
+app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  const raw = (req.body.SpeechResult || "").trim();
 
-  /* Silence handling */
-  if (!raw) {
-    s.unclearCount += 1;
-    const next = RULES.nextOnUnclear(s.unclearCount);
-
-    s.agentTexts.push(RESPONSES[next].text);
-
-    return res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
-  }
-
-  if (hasGujarati(raw)) {
-    s.userBuffer.push(normalizeMixedGujarati(raw));
-  }
-
-  let next = null;
-
-  /* INTRO handling */
-  if (s.state === STATES.INTRO) {
-    if (isBusyIntent(raw)) {
-      next = STATES.CALLBACK_TIME;
-    } else {
-      next = STATES.TASK_CHECK;
-    }
-  }
-
-  /* CALLBACK TIME */
-  else if (s.state === STATES.CALLBACK_TIME) {
-    s.callbackTime = raw;
-    next = STATES.CALLBACK_CONFIRM;
-  }
-
-  /* MAIN FLOW */
-  else if (
-    s.state === STATES.TASK_CHECK ||
-    s.state === STATES.RETRY_TASK_CHECK ||
-    s.state === STATES.CONFIRM_TASK
-  ) {
-    const { status, confidence } = detectTaskStatus(raw);
-    s.confidenceScore = confidence;
-
-    if (status === "PENDING") next = STATES.TASK_PENDING;
-    else if (status === "DONE") next = STATES.TASK_DONE;
-    else {
-      s.unclearCount += 1;
-      next = RULES.nextOnUnclear(s.unclearCount);
-    }
-  }
-
-  /* FALLBACK */
-  else {
-    next = STATES.PROBLEM_RECORDED;
-  }
-
-  if (s.userBuffer.length) {
-    s.userTexts.push(s.userBuffer.join(" "));
-    s.userBuffer = [];
-  }
-
-  s.agentTexts.push(RESPONSES[next].text);
-
-  if (RESPONSES[next].end) {
-    s.result = next;
+  if (s && !s.result) {
+    s.result = "abandoned";
     s.endTime = Date.now();
+
+    if (s.batchId) {
+      await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
+    }
+
     logToSheet(s);
     sessions.delete(s.sid);
-
-    return res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Hangup/>
-</Response>
-`);
   }
 
-  s.state = next;
-  res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
-});
-
-/* ======================
-   CALL END
-====================== */
-app.post("/call-status", (req, res) => {
-  const s = sessions.get(req.body.CallSid);
-  if (s && !s.result) {
-  s.result = "abandoned";
-  s.endTime = Date.now();
-
-  if (s.batchId) {
-    await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
-  }
-
-  logToSheet(s);
-  sessions.delete(s.sid);
-  }
   res.sendStatus(200);
 });
 
