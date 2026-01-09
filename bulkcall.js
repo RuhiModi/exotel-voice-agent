@@ -172,6 +172,36 @@ function detectTaskStatus(text) {
 }
 
 /* ======================
+   GOOGLE SHEET LOG
+====================== */
+function logToSheet(s) {
+  const duration =
+    s.endTime && s.startTime
+      ? Math.floor((s.endTime - s.startTime) / 1000)
+      : 0;
+
+  sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Call_Logs!A:J",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        new Date(s.startTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+        new Date(s.endTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+        s.sid,
+        s.userPhone,
+        s.agentTexts.join(" | "),
+        s.userTexts.join(" | "),
+        s.result,
+        duration,
+        s.confidenceScore ?? 0,
+        s.callbackTime ?? ""
+      ]]
+    }
+  }).catch(console.error);
+}
+
+/* ======================
    BULK CALL API
 ====================== */
 app.post("/bulk-call", async (req, res) => {
@@ -196,10 +226,10 @@ app.post("/bulk-call", async (req, res) => {
           userPhone: phone,
           batchId,
           startTime: Date.now(),
+          endTime: null,
           state: STATES.INTRO,
           agentTexts: [],
           userTexts: [],
-          userBuffer: [],
           unclearCount: 0,
           confidenceScore: 0,
           result: ""
@@ -231,16 +261,14 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (RESTORED)
+   LISTEN
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
   if (!raw) {
-    s.unclearCount += 1;
-    const next = RULES.nextOnUnclear(s.unclearCount);
-
+    const next = RULES.nextOnUnclear(++s.unclearCount);
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -268,7 +296,6 @@ app.post("/listen", (req, res) => {
 
   if (RESPONSES[next].end) {
     s.result = next;
-    sessions.delete(s.sid);
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -289,13 +316,23 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS
+   CALL STATUS (FINAL)
 ====================== */
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  if (s && s.batchId) {
-    await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
+
+  if (s) {
+    s.endTime = Date.now();
+    s.result ||= req.body.CallStatus || "completed";
+
+    if (s.batchId) {
+      await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
+    }
+
+    logToSheet(s);
+    sessions.delete(s.sid);
   }
+
   res.sendStatus(200);
 });
 
@@ -304,5 +341,5 @@ app.post("/call-status", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – STABLE & BULK READY");
+  console.log("✅ Gujarati AI Voice Agent – FULLY STABLE & LOGGING");
 });
