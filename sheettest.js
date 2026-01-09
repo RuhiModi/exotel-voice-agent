@@ -90,6 +90,22 @@ async function preloadAll() {
 }
 
 /* ======================
+   TIME HELPERS (IST)
+====================== */
+function formatIST(ts) {
+  return new Date(ts).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+}
+
+/* ======================
    HELPERS
 ====================== */
 function hasGujarati(text) {
@@ -138,22 +154,27 @@ function detectTaskStatus(text) {
 
 /* ======================
    GOOGLE SHEET LOG
+   (ONLY TIMESTAMPS UPDATED)
 ====================== */
 function logToSheet(s) {
+  const durationSec = s.endTime
+    ? Math.floor((s.endTime - s.startTime) / 1000)
+    : 0;
+
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: "Call_Logs!A:I",
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
-        new Date(s.startTime).toISOString(),
+        formatIST(s.startTime),   // Call Start Time (IST)
+        formatIST(s.endTime),     // Call End Time (IST)
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
         s.result,
-        Math.floor((Date.now() - s.startTime) / 1000),
-        "Completed",
+        durationSec,
         s.confidenceScore ?? 0
       ]]
     }
@@ -179,6 +200,7 @@ app.post("/call", async (req, res) => {
     sid: call.sid,
     userPhone: to,
     startTime: Date.now(),
+    endTime: null,
     state: STATES.INTRO,
     agentTexts: [],
     userTexts: [],
@@ -209,7 +231,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (STATE + RULE BASED)
+   LISTEN
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -223,8 +245,7 @@ app.post("/listen", (req, res) => {
 
   if (s.state === STATES.INTRO) {
     next = STATES.TASK_CHECK;
-  }
-  else if (
+  } else if (
     s.state === STATES.TASK_CHECK ||
     s.state === STATES.RETRY_TASK_CHECK ||
     s.state === STATES.CONFIRM_TASK
@@ -238,8 +259,7 @@ app.post("/listen", (req, res) => {
       s.unclearCount += 1;
       next = RULES.nextOnUnclear(s.unclearCount);
     }
-  }
-  else {
+  } else {
     next = STATES.PROBLEM_RECORDED;
   }
 
@@ -252,6 +272,7 @@ app.post("/listen", (req, res) => {
 
   if (RESPONSES[next].end) {
     s.result = next;
+    s.endTime = Date.now();
     logToSheet(s);
     sessions.delete(s.sid);
 
@@ -281,6 +302,7 @@ app.post("/call-status", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   if (s && !s.result) {
     s.result = "abandoned";
+    s.endTime = Date.now();
     logToSheet(s);
     sessions.delete(s.sid);
   }
