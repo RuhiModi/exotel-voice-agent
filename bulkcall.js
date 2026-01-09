@@ -202,6 +202,49 @@ function logToSheet(s) {
 }
 
 /* ======================
+   SINGLE CALL API (RESTORED)
+====================== */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+
+  if (!to) {
+    return res.status(400).json({ error: "Phone number required" });
+  }
+
+  try {
+    const call = await twilioClient.calls.create({
+      to,
+      from: process.env.TWILIO_FROM_NUMBER,
+      url: `${BASE_URL}/answer`,
+      statusCallback: `${BASE_URL}/call-status`,
+      statusCallbackEvent: ["completed"],
+      method: "POST"
+    });
+
+    sessions.set(call.sid, {
+      sid: call.sid,
+      userPhone: to,
+      startTime: Date.now(),
+      endTime: null,
+      state: STATES.INTRO,
+      agentTexts: [],
+      userTexts: [],
+      unclearCount: 0,
+      confidenceScore: 0,
+      result: ""
+    });
+
+    res.json({
+      status: "calling",
+      sid: call.sid
+    });
+  } catch (err) {
+    console.error("Single call failed:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ======================
    BULK CALL API
 ====================== */
 app.post("/bulk-call", async (req, res) => {
