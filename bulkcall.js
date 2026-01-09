@@ -136,6 +136,42 @@ function normalizeMixedGujarati(text) {
 }
 
 /* ======================
+   HELPERS for bulck call
+====================== */
+async function updateBulkCallStatus(phone, batchId, status) {
+  try {
+    const sheet = sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Bulk_Calls!A:C"
+    });
+
+    const rows = sheet.data.values || [];
+
+    for (let i = 1; i < rows.length; i++) {
+      const rowPhone = rows[i][0];
+      const rowBatch = rows[i][1];
+
+      if (rowPhone === phone && rowBatch === batchId) {
+        const rowNumber = i + 1;
+
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: `Bulk_Calls!C${rowNumber}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [[status]]
+          }
+        });
+
+        break;
+      }
+    }
+  } catch (err) {
+    console.error("Sheet status update failed:", err.message);
+  }
+}
+
+/* ======================
    INTENT DETECTION
 ====================== */
 function detectTaskStatus(text) {
@@ -250,6 +286,7 @@ app.post("/bulk-call", async (req, res) => {
           statusCallbackEvent: ["completed"],
           method: "POST"
         });
+      await updateBulkCallStatus(phone, batchId, "Calling");
 
         sessions.set(call.sid, {
           sid: call.sid,
@@ -402,10 +439,15 @@ app.post("/listen", (req, res) => {
 app.post("/call-status", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   if (s && !s.result) {
-    s.result = "abandoned";
-    s.endTime = Date.now();
-    logToSheet(s);
-    sessions.delete(s.sid);
+  s.result = "abandoned";
+  s.endTime = Date.now();
+
+  if (s.batchId) {
+    await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
+  }
+
+  logToSheet(s);
+  sessions.delete(s.sid);
   }
   res.sendStatus(200);
 });
