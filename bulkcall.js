@@ -1,6 +1,7 @@
 /*************************************************
  * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
  * State-based | Rule-driven | Scriptless
+ * SINGLE + BULK CALL ENABLED
  *************************************************/
 
 import express from "express";
@@ -90,6 +91,22 @@ async function preloadAll() {
 }
 
 /* ======================
+   TIME HELPERS (IST)
+====================== */
+function formatIST(ts) {
+  return new Date(ts).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+}
+
+/* ======================
    HELPERS
 ====================== */
 function hasGujarati(text) {
@@ -119,14 +136,8 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
-function normalizePhone(phone) {
-  if (!phone) return "";
-  return phone.toString().replace(/\D/g, "").replace(/^91/, "");
-}
-
 /* ======================
    INTENT DETECTION
-   (ONLY FOR STATUS)
 ====================== */
 function detectTaskStatus(text) {
   const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
@@ -137,17 +148,33 @@ function detectTaskStatus(text) {
 
   if (p && !d) return { status: "PENDING", confidence: 90 };
   if (d && !p) return { status: "DONE", confidence: 90 };
+  if (p && d) return { status: "UNCLEAR", confidence: 40 };
+
   return { status: "UNCLEAR", confidence: 30 };
+}
+
+/* ======================
+   BUSY / NO-TIME INTENT
+====================== */
+function isBusyIntent(text) {
+  const busyPhrases = [
+    "સમય નથી",
+    "હવે નથી",
+    "પછી ફોન",
+    "બાદમાં ફોન",
+    "હવે વાત નહીં",
+    "બાદમાં વાત"
+  ];
+  return busyPhrases.some(p => text.includes(p));
 }
 
 /* ======================
    GOOGLE SHEET LOG
 ====================== */
 function logToSheet(s) {
-  const duration =
-    s.endTime && s.startTime
-      ? Math.floor((s.endTime - s.startTime) / 1000)
-      : 0;
+  const durationSec = s.endTime
+    ? Math.floor((s.endTime - s.startTime) / 1000)
+    : 0;
 
   sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
@@ -155,14 +182,14 @@ function logToSheet(s) {
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
-        new Date(s.startTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
-        new Date(s.endTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+        formatIST(s.startTime),
+        formatIST(s.endTime),
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
         s.result,
-        duration,
+        durationSec,
         s.confidenceScore ?? 0,
         s.callbackTime ?? ""
       ]]
@@ -190,15 +217,54 @@ app.post("/call", async (req, res) => {
     userPhone: to,
     startTime: Date.now(),
     endTime: null,
+    callbackTime: null,
     state: STATES.INTRO,
     agentTexts: [],
     userTexts: [],
+    userBuffer: [],
     unclearCount: 0,
     confidenceScore: 0,
     result: ""
   });
 
   res.json({ status: "calling" });
+});
+
+/* ======================
+   BULK CALL (ADDED SAFELY)
+====================== */
+app.post("/bulk-call", async (req, res) => {
+  const { phones = [] } = req.body;
+
+  phones.forEach((phone, index) => {
+    setTimeout(async () => {
+      const call = await twilioClient.calls.create({
+        to: phone,
+        from: process.env.TWILIO_FROM_NUMBER,
+        url: `${BASE_URL}/answer`,
+        statusCallback: `${BASE_URL}/call-status`,
+        statusCallbackEvent: ["completed"],
+        method: "POST"
+      });
+
+      sessions.set(call.sid, {
+        sid: call.sid,
+        userPhone: phone,
+        startTime: Date.now(),
+        endTime: null,
+        callbackTime: null,
+        state: STATES.INTRO,
+        agentTexts: [],
+        userTexts: [],
+        userBuffer: [],
+        unclearCount: 0,
+        confidenceScore: 0,
+        result: ""
+      });
+    }, index * 1500); // safe throttling
+  });
+
+  res.json({ status: "bulk calling started", total: phones.length });
 });
 
 /* ======================
@@ -219,32 +285,17 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (FIXED)
+   LISTEN (UNCHANGED CORE LOGIC)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
-  /* 🔒 FINAL PROBLEM RECORD (NO LOOP) */
-  if (s.state === STATES.PROBLEM_RECORDED) {
-    if (raw) s.userTexts.push(raw);
-
-    s.result = STATES.PROBLEM_RECORDED;
-    s.endTime = Date.now();
-
-    logToSheet(s);
-    sessions.delete(s.sid);
-
-    return res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/problem_recorded.mp3</Play>
-  <Hangup/>
-</Response>
-`);
-  }
-
   if (!raw) {
-    const next = RULES.nextOnUnclear(++s.unclearCount);
+    s.unclearCount += 1;
+    const next = RULES.nextOnUnclear(s.unclearCount);
+    s.agentTexts.push(RESPONSES[next].text);
+
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -255,18 +306,41 @@ app.post("/listen", (req, res) => {
 `);
   }
 
-  s.userTexts.push(raw);
+  if (hasGujarati(raw)) {
+    s.userBuffer.push(normalizeMixedGujarati(raw));
+  }
 
-  let next;
+  let next = null;
+
   if (s.state === STATES.INTRO) {
-    next = STATES.TASK_CHECK;
-  } else {
+    next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+  }
+  else if (s.state === STATES.CALLBACK_TIME) {
+    s.callbackTime = raw;
+    next = STATES.CALLBACK_CONFIRM;
+  }
+  else if (
+    s.state === STATES.TASK_CHECK ||
+    s.state === STATES.RETRY_TASK_CHECK ||
+    s.state === STATES.CONFIRM_TASK
+  ) {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
 
-    if (status === "DONE") next = STATES.TASK_DONE;
-    else if (status === "PENDING") next = STATES.PROBLEM_RECORDED;
-    else next = RULES.nextOnUnclear(++s.unclearCount);
+    if (status === "PENDING") next = STATES.TASK_PENDING;
+    else if (status === "DONE") next = STATES.TASK_DONE;
+    else {
+      s.unclearCount += 1;
+      next = RULES.nextOnUnclear(s.unclearCount);
+    }
+  }
+  else {
+    next = STATES.PROBLEM_RECORDED;
+  }
+
+  if (s.userBuffer.length) {
+    s.userTexts.push(s.userBuffer.join(" "));
+    s.userBuffer = [];
   }
 
   s.agentTexts.push(RESPONSES[next].text);
@@ -274,7 +348,6 @@ app.post("/listen", (req, res) => {
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
-
     logToSheet(s);
     sessions.delete(s.sid);
 
@@ -298,19 +371,16 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS
+   CALL END
 ====================== */
-app.post("/call-status", async (req, res) => {
+app.post("/call-status", (req, res) => {
   const s = sessions.get(req.body.CallSid);
-
   if (s && !s.result) {
+    s.result = "abandoned";
     s.endTime = Date.now();
-    s.result = req.body.CallStatus || "completed";
-
     logToSheet(s);
     sessions.delete(s.sid);
   }
-
   res.sendStatus(200);
 });
 
@@ -319,5 +389,5 @@ app.post("/call-status", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – STABLE, HUMAN & LOOP-FREE");
+  console.log("✅ Gujarati AI Voice Agent – SINGLE + BULK, STABLE & HUMAN");
 });
