@@ -90,22 +90,6 @@ async function preloadAll() {
 }
 
 /* ======================
-   TIME HELPERS (IST)
-====================== */
-function formatIST(ts) {
-  return new Date(ts).toLocaleString("en-IN", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true
-  });
-}
-
-/* ======================
    HELPERS
 ====================== */
 function hasGujarati(text) {
@@ -135,8 +119,13 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone.toString().replace(/\D/g, "").replace(/^91/, "");
+}
+
 /* ======================
-   BULK CALL STATUS HELPER
+   BULK STATUS UPDATE
 ====================== */
 async function updateBulkCallStatus(phone, batchId, status) {
   try {
@@ -149,17 +138,15 @@ async function updateBulkCallStatus(phone, batchId, status) {
     const cleanPhone = normalizePhone(phone);
 
     for (let i = 1; i < rows.length; i++) {
-      const rowPhone = normalizePhone(rows[i][0]);
-      const rowBatch = rows[i][1];
-
-      if (rowPhone === cleanPhone && rowBatch === batchId) {
+      if (
+        normalizePhone(rows[i][0]) === cleanPhone &&
+        rows[i][1] === batchId
+      ) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
           range: `Bulk_Calls!C${i + 1}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: [[status]]
-          }
+          requestBody: { values: [[status]] }
         });
         break;
       }
@@ -167,18 +154,6 @@ async function updateBulkCallStatus(phone, batchId, status) {
   } catch (err) {
     console.error("Sheet status update failed:", err.message);
   }
-}
-
-/* ======================
-   Other Bulk Function
-====================== */
-
-function normalizePhone(phone) {
-  if (!phone) return "";
-  return phone
-    .toString()
-    .replace(/\D/g, "")     // remove +, spaces, symbols
-    .replace(/^91/, "");    // remove India country code if present
 }
 
 /* ======================
@@ -193,52 +168,7 @@ function detectTaskStatus(text) {
 
   if (p && !d) return { status: "PENDING", confidence: 90 };
   if (d && !p) return { status: "DONE", confidence: 90 };
-  if (p && d) return { status: "UNCLEAR", confidence: 40 };
-
   return { status: "UNCLEAR", confidence: 30 };
-}
-
-/* ======================
-   BUSY INTENT
-====================== */
-function isBusyIntent(text) {
-  return [
-    "સમય નથી",
-    "હવે નથી",
-    "પછી ફોન",
-    "બાદમાં ફોન",
-    "હવે વાત નહીં",
-    "બાદમાં વાત"
-  ].some(p => text.includes(p));
-}
-
-/* ======================
-   GOOGLE SHEET LOG
-====================== */
-function logToSheet(s) {
-  const durationSec = s.endTime
-    ? Math.floor((s.endTime - s.startTime) / 1000)
-    : 0;
-
-  sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: "Call_Logs!A:J",
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[
-        formatIST(s.startTime),
-        formatIST(s.endTime),
-        s.sid,
-        s.userPhone,
-        s.agentTexts.join(" | "),
-        s.userTexts.join(" | "),
-        s.result,
-        durationSec,
-        s.confidenceScore ?? 0,
-        s.callbackTime ?? ""
-      ]]
-    }
-  }).catch(console.error);
 }
 
 /* ======================
@@ -266,8 +196,6 @@ app.post("/bulk-call", async (req, res) => {
           userPhone: phone,
           batchId,
           startTime: Date.now(),
-          endTime: null,
-          callbackTime: null,
           state: STATES.INTRO,
           agentTexts: [],
           userTexts: [],
@@ -303,23 +231,71 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS (FIXED)
+   LISTEN (RESTORED)
+====================== */
+app.post("/listen", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  const raw = (req.body.SpeechResult || "").trim();
+
+  if (!raw) {
+    s.unclearCount += 1;
+    const next = RULES.nextOnUnclear(s.unclearCount);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+  }
+
+  s.userTexts.push(raw);
+
+  let next;
+  if (s.state === STATES.INTRO) next = STATES.TASK_CHECK;
+  else {
+    const { status, confidence } = detectTaskStatus(raw);
+    s.confidenceScore = confidence;
+
+    if (status === "DONE") next = STATES.TASK_DONE;
+    else if (status === "PENDING") next = STATES.TASK_PENDING;
+    else next = RULES.nextOnUnclear(++s.unclearCount);
+  }
+
+  s.agentTexts.push(RESPONSES[next].text);
+
+  if (RESPONSES[next].end) {
+    s.result = next;
+    sessions.delete(s.sid);
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Hangup/>
+</Response>
+`);
+  }
+
+  s.state = next;
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+});
+
+/* ======================
+   CALL STATUS
 ====================== */
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-
-  if (s && !s.result) {
-    s.result = "abandoned";
-    s.endTime = Date.now();
-
-    if (s.batchId) {
-      await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
-    }
-
-    logToSheet(s);
-    sessions.delete(s.sid);
+  if (s && s.batchId) {
+    await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
   }
-
   res.sendStatus(200);
 });
 
@@ -328,5 +304,5 @@ app.post("/call-status", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – CLEAN, HUMAN & CALLBACK-READY");
+  console.log("✅ Gujarati AI Voice Agent – STABLE & BULK READY");
 });
