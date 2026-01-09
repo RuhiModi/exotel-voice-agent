@@ -146,14 +146,20 @@ async function updateBulkCallStatus(phone, batchId, status) {
     });
 
     const rows = sheet.data.values || [];
+    const cleanPhone = normalizePhone(phone);
 
     for (let i = 1; i < rows.length; i++) {
-      if (rows[i][0] === phone && rows[i][1] === batchId) {
+      const rowPhone = normalizePhone(rows[i][0]);
+      const rowBatch = rows[i][1];
+
+      if (rowPhone === cleanPhone && rowBatch === batchId) {
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEET_ID,
           range: `Bulk_Calls!C${i + 1}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[status]] }
+          requestBody: {
+            values: [[status]]
+          }
         });
         break;
       }
