@@ -268,7 +268,8 @@ app.post("/call", async (req, res) => {
 /* ======================
    BULK CALL (NEW)
 ====================== */
-app.post("/bulk-call", async (req, res) => {
+app.post("/call-status", async (req, res) => {
+
   const { phones, batchId } = req.body;
 
   if (!Array.isArray(phones) || phones.length === 0) {
