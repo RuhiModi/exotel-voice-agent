@@ -130,6 +130,12 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
+/* ✅ NEW — CRITICAL */
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone.toString().replace(/\D/g, "").replace(/^91/, "");
+}
+
 /* ======================
    INTENT DETECTION
 ====================== */
@@ -170,9 +176,13 @@ async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
   });
 
   const rows = sheet.data.values || [];
+  const cleanPhone = normalizePhone(phone);
 
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === phone && rows[i][1] === batchId) {
+    if (
+      normalizePhone(rows[i][0]) === cleanPhone &&
+      rows[i][1] === batchId
+    ) {
       await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
         range: `Bulk_Calls!C${i + 1}:D${i + 1}`,
@@ -181,9 +191,10 @@ async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
           values: [[status, callSid || rows[i][3] || ""]]
         }
       });
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 async function updateBulkByCallSid(callSid, status) {
@@ -202,9 +213,10 @@ async function updateBulkByCallSid(callSid, status) {
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [[status]] }
       });
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 /* ======================
@@ -270,7 +282,7 @@ app.post("/call", async (req, res) => {
 });
 
 /* ======================
-   BULK CALL (FINAL FIX)
+   BULK CALL
 ====================== */
 app.post("/bulk-call", async (req, res) => {
   const { phones = [], batchId } = req.body;
@@ -278,8 +290,6 @@ app.post("/bulk-call", async (req, res) => {
   phones.forEach((phone, index) => {
     setTimeout(async () => {
       try {
-        await updateBulkRowByPhone(phone, batchId, "Calling");
-
         const call = await twilioClient.calls.create({
           to: phone,
           from: process.env.TWILIO_FROM_NUMBER,
@@ -364,9 +374,10 @@ app.post("/listen", (req, res) => {
   } else {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
-    next = status === "DONE"
-      ? STATES.TASK_DONE
-      : status === "PENDING"
+    next =
+      status === "DONE"
+        ? STATES.TASK_DONE
+        : status === "PENDING"
         ? STATES.TASK_PENDING
         : RULES.nextOnUnclear(++s.unclearCount);
   }
@@ -403,19 +414,22 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS (FINAL)
+   CALL STATUS
 ====================== */
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
   if (s) {
     if (s.batchId) {
-      await updateBulkRowByPhone(
-        s.userPhone,
-        s.batchId,
-        "Completed",
-        req.body.CallSid
-      );
+      const updated = await updateBulkByCallSid(req.body.CallSid, "Completed");
+      if (!updated) {
+        await updateBulkRowByPhone(
+          s.userPhone,
+          s.batchId,
+          "Completed",
+          req.body.CallSid
+        );
+      }
     }
 
     if (!s.result) {
