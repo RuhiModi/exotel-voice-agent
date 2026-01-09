@@ -1,11 +1,8 @@
 /*************************************************
  * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
- * Confidence | Retry | Escalation ENABLED
+ * State-based | Rule-driven | Scriptless
  *************************************************/
 
-import { STATES } from "./conversation/states.js";
-import { RESPONSES } from "./conversation/responses.js";
-import { RULES } from "./conversation/rules.js";
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -15,6 +12,10 @@ import { fileURLToPath } from "url";
 import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
+
+import { STATES } from "./conversation/states.js";
+import { RESPONSES } from "./conversation/responses.js";
+import { RULES } from "./conversation/rules.js";
 
 dotenv.config();
 
@@ -57,6 +58,7 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const AUDIO_DIR = path.join(__dirname, "audio");
+
 if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR);
 app.use("/audio", express.static(AUDIO_DIR));
 
@@ -64,47 +66,6 @@ app.use("/audio", express.static(AUDIO_DIR));
    SESSION MEMORY
 ====================== */
 const sessions = new Map();
-
-/* ======================
-   FLOW
-====================== */
-const FLOW = {
-  intro: {
-    prompt:
-      "નમસ્તે, હું દરિયાપુરના ધારાસભ્ય કૌશિક જૈનના ઇ-કાર્યાલય તરફથી બોલું છું. શું હું આપનો થોડો સમય લઈ શકું?"
-  },
-  task_check: {
-    prompt:
-      "કૃપા કરીને જણાવશો કે યોજનાકીય કેમ્પ દરમિયાન આપનું કામ પૂર્ણ થયું છે કે નહીં?"
-  },
-  retry_task_check: {
-    prompt:
-      "માફ કરશો, હું સ્પષ્ટ સમજી શક્યો નથી. કૃપા કરીને ફરીથી કહેશો — આપનું કામ પૂર્ણ થયું છે કે નહીં?"
-  },
-  confirm_task: {
-    prompt:
-      "ફક્ત પુષ્ટિ માટે પૂછું છું — આપનું કામ પૂર્ણ થયું છે કે હજુ બાકી છે?"
-  },
-  task_done: {
-    prompt:
-      "ખૂબ આનંદ થયો કે આપનું કામ પૂર્ણ થયું છે. આભાર.",
-    end: true
-  },
-  task_pending: {
-    prompt:
-      "માફ કરશો કે આપનું કામ હજુ પૂર્ણ થયું નથી. કૃપા કરીને આપની સમસ્યાની વિગતો જણાવશો."
-  },
-  problem_recorded: {
-    prompt:
-      "આભાર. આપની માહિતી નોંધાઈ ગઈ છે. અમારી ટીમ જલદી જ સંપર્ક કરશે.",
-    end: true
-  },
-  escalate: {
-    prompt:
-      "માફ કરશો, તમારી માહિતી સ્પષ્ટ રીતે મળી નથી. અમે તમને માનવીય સહાયક સાથે જોડશું.",
-    end: true
-  }
-};
 
 /* ======================
    AUDIO CACHE
@@ -123,15 +84,14 @@ async function generateAudio(text, file) {
 }
 
 async function preloadAll() {
-  for (const k in FLOW) {
-    await generateAudio(FLOW[k].prompt, `${k}.mp3`);
+  for (const key in RESPONSES) {
+    await generateAudio(RESPONSES[key].text, `${key}.mp3`);
   }
 }
 
 /* ======================
    HELPERS
 ====================== */
-
 function hasGujarati(text) {
   return /[\u0A80-\u0AFF]/.test(text);
 }
@@ -152,15 +112,16 @@ function normalizeMixedGujarati(text) {
     change: "ફેરફાર"
   };
 
-  let normalized = text;
-  for (const key in dict) {
-    const regex = new RegExp(`\\b${key}\\b`, "gi");
-    normalized = normalized.replace(regex, dict[key]);
+  let out = text;
+  for (const k in dict) {
+    out = out.replace(new RegExp(`\\b${k}\\b`, "gi"), dict[k]);
   }
-  return normalized;
+  return out;
 }
 
-/* 🔑 Intent detection with confidence */
+/* ======================
+   INTENT DETECTION
+====================== */
 function detectTaskStatus(text) {
   const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
   const done = ["પૂર્ણ થયું", "થઈ ગયું", "થયું છે", "મળી ગયું"];
@@ -218,7 +179,7 @@ app.post("/call", async (req, res) => {
     sid: call.sid,
     userPhone: to,
     startTime: Date.now(),
-    state: "intro",
+    state: STATES.INTRO,
     agentTexts: [],
     userTexts: [],
     userBuffer: [],
@@ -235,11 +196,11 @@ app.post("/call", async (req, res) => {
 ====================== */
 app.post("/answer", (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  s.agentTexts.push(FLOW.intro.prompt);
+  s.agentTexts.push(RESPONSES[STATES.INTRO].text);
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${BASE_URL}/audio/intro.mp3</Play>
+  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
   <Gather input="speech" language="gu-IN"
     timeout="8" speechTimeout="auto"
     action="${BASE_URL}/listen"/>
@@ -248,7 +209,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (FINAL HUMANATIC LOGIC)
+   LISTEN (STATE + RULE BASED)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -260,25 +221,26 @@ app.post("/listen", (req, res) => {
 
   let next = null;
 
-  if (s.state === "intro") {
-    next = "task_check";
+  if (s.state === STATES.INTRO) {
+    next = STATES.TASK_CHECK;
   }
-  else if (s.state === "task_check" || s.state === "retry_task_check" || s.state === "confirm_task") {
+  else if (
+    s.state === STATES.TASK_CHECK ||
+    s.state === STATES.RETRY_TASK_CHECK ||
+    s.state === STATES.CONFIRM_TASK
+  ) {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
 
-    if (status === "PENDING") next = "task_pending";
-    else if (status === "DONE") next = "task_done";
+    if (status === "PENDING") next = STATES.TASK_PENDING;
+    else if (status === "DONE") next = STATES.TASK_DONE;
     else {
       s.unclearCount += 1;
-
-      if (s.unclearCount === 1) next = "retry_task_check";
-      else if (s.unclearCount === 2) next = "confirm_task";
-      else next = "escalate";
+      next = RULES.nextOnUnclear(s.unclearCount);
     }
   }
   else {
-    next = "problem_recorded";
+    next = STATES.PROBLEM_RECORDED;
   }
 
   if (s.userBuffer.length) {
@@ -286,12 +248,13 @@ app.post("/listen", (req, res) => {
     s.userBuffer = [];
   }
 
-  s.agentTexts.push(FLOW[next].prompt);
+  s.agentTexts.push(RESPONSES[next].text);
 
-  if (FLOW[next].end) {
+  if (RESPONSES[next].end) {
     s.result = next;
     logToSheet(s);
     sessions.delete(s.sid);
+
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -329,5 +292,5 @@ app.post("/call-status", (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – CONFIDENT & ESCALATION READY");
+  console.log("✅ Gujarati AI Voice Agent – CLEAN & STATE-DRIVEN");
 });
