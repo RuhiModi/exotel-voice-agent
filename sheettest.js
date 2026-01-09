@@ -154,7 +154,6 @@ function detectTaskStatus(text) {
 
 /* ======================
    GOOGLE SHEET LOG
-   (ONLY TIMESTAMPS UPDATED)
 ====================== */
 function logToSheet(s) {
   const durationSec = s.endTime
@@ -167,8 +166,8 @@ function logToSheet(s) {
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
-        formatIST(s.startTime),   // Call Start Time (IST)
-        formatIST(s.endTime),     // Call End Time (IST)
+        formatIST(s.startTime),
+        formatIST(s.endTime),
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
@@ -224,7 +223,7 @@ app.post("/answer", (req, res) => {
 <Response>
   <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
   <Gather input="speech" language="gu-IN"
-    timeout="8" speechTimeout="auto"
+    timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
@@ -237,7 +236,24 @@ app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
-  if (raw && hasGujarati(raw)) {
+  /* ✅ SAFE HANDLING FOR SILENCE / NO SPEECH */
+  if (!raw) {
+    s.unclearCount += 1;
+    const next = RULES.nextOnUnclear(s.unclearCount);
+
+    s.agentTexts.push(RESPONSES[next].text);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+  }
+
+  if (hasGujarati(raw)) {
     s.userBuffer.push(normalizeMixedGujarati(raw));
   }
 
@@ -289,7 +305,7 @@ app.post("/listen", (req, res) => {
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
   <Gather input="speech" language="gu-IN"
-    timeout="8" speechTimeout="auto"
+    timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
