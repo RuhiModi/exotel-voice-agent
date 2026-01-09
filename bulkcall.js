@@ -125,39 +125,8 @@ function normalizePhone(phone) {
 }
 
 /* ======================
-   BULK STATUS UPDATE
-====================== */
-async function updateBulkCallStatus(phone, batchId, status) {
-  try {
-    const sheet = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: "Bulk_Calls!A:C"
-    });
-
-    const rows = sheet.data.values || [];
-    const cleanPhone = normalizePhone(phone);
-
-    for (let i = 1; i < rows.length; i++) {
-      if (
-        normalizePhone(rows[i][0]) === cleanPhone &&
-        rows[i][1] === batchId
-      ) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: SHEET_ID,
-          range: `Bulk_Calls!C${i + 1}`,
-          valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[status]] }
-        });
-        break;
-      }
-    }
-  } catch (err) {
-    console.error("Sheet status update failed:", err.message);
-  }
-}
-
-/* ======================
    INTENT DETECTION
+   (ONLY FOR STATUS)
 ====================== */
 function detectTaskStatus(text) {
   const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
@@ -202,88 +171,34 @@ function logToSheet(s) {
 }
 
 /* ======================
-   SINGLE CALL API (RESTORED)
+   SINGLE CALL
 ====================== */
 app.post("/call", async (req, res) => {
   const { to } = req.body;
 
-  if (!to) {
-    return res.status(400).json({ error: "Phone number required" });
-  }
-
-  try {
-    const call = await twilioClient.calls.create({
-      to,
-      from: process.env.TWILIO_FROM_NUMBER,
-      url: `${BASE_URL}/answer`,
-      statusCallback: `${BASE_URL}/call-status`,
-      statusCallbackEvent: ["completed"],
-      method: "POST"
-    });
-
-    sessions.set(call.sid, {
-      sid: call.sid,
-      userPhone: to,
-      startTime: Date.now(),
-      endTime: null,
-      state: STATES.INTRO,
-      agentTexts: [],
-      userTexts: [],
-      unclearCount: 0,
-      confidenceScore: 0,
-      result: ""
-    });
-
-    res.json({
-      status: "calling",
-      sid: call.sid
-    });
-  } catch (err) {
-    console.error("Single call failed:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ======================
-   BULK CALL API
-====================== */
-app.post("/bulk-call", async (req, res) => {
-  const { phones, batchId } = req.body;
-
-  phones.forEach((phone, index) => {
-    setTimeout(async () => {
-      try {
-        const call = await twilioClient.calls.create({
-          to: phone,
-          from: process.env.TWILIO_FROM_NUMBER,
-          url: `${BASE_URL}/answer`,
-          statusCallback: `${BASE_URL}/call-status`,
-          statusCallbackEvent: ["completed"],
-          method: "POST"
-        });
-
-        await updateBulkCallStatus(phone, batchId, "Calling");
-
-        sessions.set(call.sid, {
-          sid: call.sid,
-          userPhone: phone,
-          batchId,
-          startTime: Date.now(),
-          endTime: null,
-          state: STATES.INTRO,
-          agentTexts: [],
-          userTexts: [],
-          unclearCount: 0,
-          confidenceScore: 0,
-          result: ""
-        });
-      } catch (err) {
-        console.error("Bulk call failed:", phone, err.message);
-      }
-    }, index * 1500);
+  const call = await twilioClient.calls.create({
+    to,
+    from: process.env.TWILIO_FROM_NUMBER,
+    url: `${BASE_URL}/answer`,
+    statusCallback: `${BASE_URL}/call-status`,
+    statusCallbackEvent: ["completed"],
+    method: "POST"
   });
 
-  res.json({ message: "Bulk call started", batchId });
+  sessions.set(call.sid, {
+    sid: call.sid,
+    userPhone: to,
+    startTime: Date.now(),
+    endTime: null,
+    state: STATES.INTRO,
+    agentTexts: [],
+    userTexts: [],
+    unclearCount: 0,
+    confidenceScore: 0,
+    result: ""
+  });
+
+  res.json({ status: "calling" });
 });
 
 /* ======================
@@ -304,11 +219,29 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN
+   LISTEN (FIXED)
 ====================== */
 app.post("/listen", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
+
+  /* 🔒 FINAL PROBLEM RECORD (NO LOOP) */
+  if (s.state === STATES.PROBLEM_RECORDED) {
+    if (raw) s.userTexts.push(raw);
+
+    s.result = STATES.PROBLEM_RECORDED;
+    s.endTime = Date.now();
+
+    logToSheet(s);
+    sessions.delete(s.sid);
+
+    return res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/problem_recorded.mp3</Play>
+  <Hangup/>
+</Response>
+`);
+  }
 
   if (!raw) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
@@ -325,13 +258,14 @@ app.post("/listen", (req, res) => {
   s.userTexts.push(raw);
 
   let next;
-  if (s.state === STATES.INTRO) next = STATES.TASK_CHECK;
-  else {
+  if (s.state === STATES.INTRO) {
+    next = STATES.TASK_CHECK;
+  } else {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
 
     if (status === "DONE") next = STATES.TASK_DONE;
-    else if (status === "PENDING") next = STATES.TASK_PENDING;
+    else if (status === "PENDING") next = STATES.PROBLEM_RECORDED;
     else next = RULES.nextOnUnclear(++s.unclearCount);
   }
 
@@ -339,6 +273,11 @@ app.post("/listen", (req, res) => {
 
   if (RESPONSES[next].end) {
     s.result = next;
+    s.endTime = Date.now();
+
+    logToSheet(s);
+    sessions.delete(s.sid);
+
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -359,18 +298,14 @@ app.post("/listen", (req, res) => {
 });
 
 /* ======================
-   CALL STATUS (FINAL)
+   CALL STATUS
 ====================== */
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
-  if (s) {
+  if (s && !s.result) {
     s.endTime = Date.now();
-    s.result ||= req.body.CallStatus || "completed";
-
-    if (s.batchId) {
-      await updateBulkCallStatus(s.userPhone, s.batchId, "Completed");
-    }
+    s.result = req.body.CallStatus || "completed";
 
     logToSheet(s);
     sessions.delete(s.sid);
@@ -384,5 +319,5 @@ app.post("/call-status", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – FULLY STABLE & LOGGING");
+  console.log("✅ Gujarati AI Voice Agent – STABLE, HUMAN & LOOP-FREE");
 });
