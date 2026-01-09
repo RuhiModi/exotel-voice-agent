@@ -170,6 +170,18 @@ async function updateBulkCallStatus(phone, batchId, status) {
 }
 
 /* ======================
+   Other Bulk Function
+====================== */
+
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone
+    .toString()
+    .replace(/\D/g, "")     // remove +, spaces, symbols
+    .replace(/^91/, "");    // remove India country code if present
+}
+
+/* ======================
    INTENT DETECTION
 ====================== */
 function detectTaskStatus(text) {
