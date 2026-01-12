@@ -392,8 +392,8 @@ app.post("/listen", (req, res) => {
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
-    logToSheet(s);
-    sessions.delete(s.sid);
+    //logToSheet(s);
+    //sessions.delete(s.sid);
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
