@@ -130,7 +130,7 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
-/* ✅ NEW — CRITICAL */
+/* ✅ CRITICAL */
 function normalizePhone(phone) {
   if (!phone) return "";
   return phone.toString().replace(/\D/g, "").replace(/^91/, "");
@@ -167,7 +167,7 @@ function isBusyIntent(text) {
 }
 
 /* ======================
-   BULK HELPERS (FIXED)
+   BULK HELPERS
 ====================== */
 async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
   const sheet = await sheets.spreadsheets.values.get({
@@ -220,14 +220,14 @@ async function updateBulkByCallSid(callSid, status) {
 }
 
 /* ======================
-   GOOGLE SHEET LOG
+   GOOGLE SHEET LOG (ASYNC)
 ====================== */
-function logToSheet(s) {
+async function logToSheet(s) {
   const duration = s.endTime
     ? Math.floor((s.endTime - s.startTime) / 1000)
     : 0;
 
-  sheets.spreadsheets.values.append({
+  await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: "Call_Logs!A:J",
     valueInputOption: "USER_ENTERED",
@@ -245,7 +245,7 @@ function logToSheet(s) {
         s.callbackTime ?? ""
       ]]
     }
-  }).catch(console.error);
+  });
 }
 
 /* ======================
@@ -344,9 +344,9 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN
+   LISTEN (FINAL FIX)
 ====================== */
-app.post("/listen", (req, res) => {
+app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
@@ -392,8 +392,20 @@ app.post("/listen", (req, res) => {
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
-    //logToSheet(s);
-    //sessions.delete(s.sid);
+
+    await logToSheet(s);
+
+    if (s.batchId) {
+      await updateBulkRowByPhone(
+        s.userPhone,
+        s.batchId,
+        "Completed",
+        s.sid
+      );
+    }
+
+    sessions.delete(s.sid);
+
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -420,22 +432,14 @@ app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
   if (s) {
-    if (s.batchId) {
-      const updated = await updateBulkByCallSid(req.body.CallSid, "Completed");
-      if (!updated) {
-        await updateBulkRowByPhone(
-          s.userPhone,
-          s.batchId,
-          "Completed",
-          req.body.CallSid
-        );
-      }
-    }
-
     if (!s.result) {
       s.result = "abandoned";
       s.endTime = Date.now();
-      logToSheet(s);
+      await logToSheet(s);
+    }
+
+    if (s.batchId) {
+      await updateBulkByCallSid(req.body.CallSid, "Completed");
     }
 
     sessions.delete(s.sid);
