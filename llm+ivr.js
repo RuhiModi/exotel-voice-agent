@@ -2,7 +2,7 @@
  * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
  * State-based | Rule-driven | Scriptless
  * SINGLE + BULK CALL ENABLED
- * IVR + LLM HYBRID (SAFE MODE – GROQ)
+ * IVR + GROQ LLM HYBRID (SAFE MODE)
  *************************************************/
 
 import express from "express";
@@ -14,7 +14,7 @@ import { fileURLToPath } from "url";
 import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
-import fetch from "node-fetch";
+import fetch from "node-fetch"; // ✅ NEW (GROQ LLM)
 
 import { STATES } from "./conversation/states.js";
 import { RESPONSES } from "./conversation/responses.js";
@@ -93,6 +93,16 @@ async function preloadAll() {
 }
 
 /* ======================
+   TIME HELPERS
+====================== */
+function formatIST(ts) {
+  return new Date(ts).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: true
+  });
+}
+
+/* ======================
    HELPERS
 ====================== */
 function hasGujarati(text) {
@@ -122,8 +132,13 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone.toString().replace(/\D/g, "").replace(/^91/, "");
+}
+
 /* ======================
-   IVR INTENT DETECTION
+   INTENT DETECTION (IVR)
 ====================== */
 function detectTaskStatus(text) {
   const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
@@ -138,9 +153,23 @@ function detectTaskStatus(text) {
   return { status: "UNCLEAR", confidence: 30 };
 }
 
-/* =====================================================
-   🔥 LLM ASSIST — GROQ (SAFE FALLBACK ONLY)
-===================================================== */
+/* ======================
+   BUSY INTENT
+====================== */
+function isBusyIntent(text) {
+  return [
+    "સમય નથી",
+    "હવે નથી",
+    "પછી ફોન",
+    "બાદમાં ફોન",
+    "હવે વાત નહીં",
+    "બાદમાં વાત"
+  ].some(p => text.includes(p));
+}
+
+/* ======================
+   🔥 GROQ LLM ASSIST (SAFE FALLBACK)
+====================== */
 async function llmAssist(text) {
   try {
     const resp = await fetch(
@@ -157,7 +186,7 @@ async function llmAssist(text) {
             {
               role: "system",
               content:
-                "You classify Gujarati speech strictly. Respond ONLY in JSON."
+                "Classify Gujarati speech strictly. Respond ONLY in JSON."
             },
             {
               role: "user",
@@ -185,7 +214,53 @@ Return ONLY:
 }
 
 /* ======================
-   LISTEN (IVR + LLM)
+   GOOGLE SHEET LOG
+====================== */
+async function logToSheet(s) {
+  const duration = s.endTime
+    ? Math.floor((s.endTime - s.startTime) / 1000)
+    : 0;
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Call_Logs!A:J",
+    valueInputOption: "USER_ENTERED",
+    requestBody: {
+      values: [[
+        formatIST(s.startTime),
+        formatIST(s.endTime),
+        s.sid,
+        s.userPhone,
+        s.agentTexts.join(" | "),
+        s.userTexts.join(" | "),
+        s.result,
+        duration,
+        s.confidenceScore ?? 0,
+        s.callbackTime ?? ""
+      ]]
+    }
+  });
+}
+
+/* ======================
+   ANSWER
+====================== */
+app.post("/answer", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  s.agentTexts.push(RESPONSES[STATES.INTRO].text);
+
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+});
+
+/* ======================
+   LISTEN (IVR + GROQ HYBRID)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -227,11 +302,17 @@ app.post("/listen", async (req, res) => {
         : RULES.nextOnUnclear(++s.unclearCount);
   }
 
+  if (s.userBuffer.length) {
+    s.userTexts.push(s.userBuffer.join(" "));
+    s.userBuffer = [];
+  }
+
   s.agentTexts.push(RESPONSES[next].text);
 
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
+    await logToSheet(s);
     sessions.delete(s.sid);
 
     return res.type("text/xml").send(`
@@ -258,5 +339,5 @@ app.post("/listen", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – IVR + GROQ LLM READY");
+  console.log("✅ Gujarati AI Voice Agent – IVR + GROQ LLM HYBRID READY");
 });
