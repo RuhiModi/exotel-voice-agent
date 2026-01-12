@@ -389,13 +389,12 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (HUMAN STABLE – IVR + LLM)
+   LISTEN (STATE-AWARE, NO LOOP)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim().toLowerCase();
 
-  /* ---------- silence ---------- */
   if (!raw) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
@@ -403,38 +402,37 @@ app.post("/listen", async (req, res) => {
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
   <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
+    timeout="10" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
   }
 
-  /* ---------- buffer ---------- */
   if (hasGujarati(raw)) {
     s.userBuffer.push(normalizeMixedGujarati(raw));
   }
 
-  let next = null;
   let status = null;
+  let next = null;
+
+  const YES = ["હા", "haan", "yes", "true", "ok"];
+  const NO  = ["ના", "nahi", "no", "false", "not"];
 
   /* ==================================================
-     🥇 LEVEL 1: YES / NO DIRECT HUMAN ANSWERS
+     STATE-AWARE YES / NO
   ================================================== */
-  const YES_WORDS = ["હા", "haan", "yes", "yeah", "thayu", "thai gayu", "done"];
-  const NO_WORDS  = ["ના", "nahi", "no", "not yet", "nathi", "baaki"];
-
-  if (YES_WORDS.some(w => raw.includes(w))) {
-    status = "DONE";
-    s.confidenceScore = 95;
+  if (YES.some(w => raw.includes(w))) {
+    if (s.state === STATES.TASK_CHECK) status = "DONE";
+    else if (s.state === STATES.TASK_PENDING) status = "PENDING";
   }
 
-  if (NO_WORDS.some(w => raw.includes(w))) {
-    status = "PENDING";
-    s.confidenceScore = 95;
+  if (NO.some(w => raw.includes(w))) {
+    if (s.state === STATES.TASK_CHECK) status = "PENDING";
+    else if (s.state === STATES.TASK_PENDING) status = "DONE";
   }
 
   /* ==================================================
-     🥈 LEVEL 2: IVR DETECTION
+     IVR KEYWORD DETECTION
   ================================================== */
   if (!status) {
     const ivr = detectTaskStatus(raw);
@@ -443,39 +441,34 @@ app.post("/listen", async (req, res) => {
   }
 
   /* ==================================================
-     🥉 LEVEL 3: LLM FALLBACK (LAST RESORT)
+     LLM FALLBACK (ONLY ONCE)
   ================================================== */
-  if (!status || s.confidenceScore < 50) {
+  if ((!status || s.confidenceScore < 50) && s.unclearCount < 2) {
     const llm = await llmAssist(raw);
 
-    if (llm.summary) {
-      s.userTexts.push(llm.summary);
-    }
+    if (llm.summary) s.userTexts.push(llm.summary);
 
-    if (llm.intent === "DONE") {
-      status = "DONE";
-      s.confidenceScore = 70;
-    } else if (llm.intent === "PENDING") {
-      status = "PENDING";
-      s.confidenceScore = 70;
-    } else if (llm.intent === "BUSY") {
-      next = STATES.CALLBACK_TIME;
-    }
+    if (llm.intent === "DONE") status = "DONE";
+    else if (llm.intent === "PENDING") status = "PENDING";
+    else if (llm.intent === "BUSY") next = STATES.CALLBACK_TIME;
   }
 
   /* ==================================================
-     🎯 DECIDE NEXT STATE
+     FINAL STATE DECISION
   ================================================== */
   if (!next) {
-    next =
-      status === "DONE"
-        ? STATES.TASK_DONE
-        : status === "PENDING"
-        ? STATES.TASK_PENDING
-        : RULES.nextOnUnclear(++s.unclearCount);
+    if (status === "DONE") next = STATES.TASK_DONE;
+    else if (status === "PENDING") next = STATES.TASK_PENDING;
+    else next = RULES.nextOnUnclear(++s.unclearCount);
   }
 
-  /* ---------- flush buffer ---------- */
+  /* ==================================================
+     HARD LOOP BREAKER
+  ================================================== */
+  if (s.unclearCount >= 3) {
+    next = STATES.CALLBACK_TIME;
+  }
+
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
@@ -483,9 +476,6 @@ app.post("/listen", async (req, res) => {
 
   s.agentTexts.push(RESPONSES[next].text);
 
-  /* ==================================================
-     🏁 END STATE
-  ================================================== */
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
@@ -510,13 +500,12 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  /* ---------- continue ---------- */
   s.state = next;
   return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
   <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
+    timeout="10" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
