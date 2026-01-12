@@ -389,17 +389,16 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (IVR + LLM HYBRID – FINAL STABLE)
+   LISTEN (HUMAN STABLE – IVR + LLM)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-  const raw = (req.body.SpeechResult || "").trim();
+  const raw = (req.body.SpeechResult || "").trim().toLowerCase();
 
-  /* ---------- No speech detected ---------- */
+  /* ---------- silence ---------- */
   if (!raw) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
-
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -410,59 +409,73 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  /* ---------- Normalize Gujarati ---------- */
+  /* ---------- buffer ---------- */
   if (hasGujarati(raw)) {
     s.userBuffer.push(normalizeMixedGujarati(raw));
   }
 
-  let next; // IMPORTANT: declared once
+  let next = null;
+  let status = null;
 
-  /* ---------- FLOW LOGIC ---------- */
-  if (s.state === STATES.INTRO) {
-    next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+  /* ==================================================
+     🥇 LEVEL 1: YES / NO DIRECT HUMAN ANSWERS
+  ================================================== */
+  const YES_WORDS = ["હા", "haan", "yes", "yeah", "thayu", "thai gayu", "done"];
+  const NO_WORDS  = ["ના", "nahi", "no", "not yet", "nathi", "baaki"];
 
-  } else if (s.state === STATES.CALLBACK_TIME) {
-    s.callbackTime = raw;
-    next = STATES.CALLBACK_CONFIRM;
+  if (YES_WORDS.some(w => raw.includes(w))) {
+    status = "DONE";
+    s.confidenceScore = 95;
+  }
 
-  } else {
-    /* ---------- IVR detection ---------- */
-    let { status, confidence } = detectTaskStatus(raw);
-    s.confidenceScore = confidence;
+  if (NO_WORDS.some(w => raw.includes(w))) {
+    status = "PENDING";
+    s.confidenceScore = 95;
+  }
 
-    /* ---------- LLM fallback ONLY if IVR unsure ---------- */
-    if (confidence < 50) {
-      const llm = await llmAssist(raw);
+  /* ==================================================
+     🥈 LEVEL 2: IVR DETECTION
+  ================================================== */
+  if (!status) {
+    const ivr = detectTaskStatus(raw);
+    status = ivr.status;
+    s.confidenceScore = ivr.confidence;
+  }
 
-      if (llm.summary) {
-        s.userTexts.push(llm.summary);
-      }
+  /* ==================================================
+     🥉 LEVEL 3: LLM FALLBACK (LAST RESORT)
+  ================================================== */
+  if (!status || s.confidenceScore < 50) {
+    const llm = await llmAssist(raw);
 
-      if (llm.intent === "DONE") {
-        status = "DONE";
-        s.confidenceScore = llm.confidence || 70;
-
-      } else if (llm.intent === "PENDING") {
-        status = "PENDING";
-        s.confidenceScore = llm.confidence || 70;
-
-      } else if (llm.intent === "BUSY") {
-        next = STATES.CALLBACK_TIME;
-      }
+    if (llm.summary) {
+      s.userTexts.push(llm.summary);
     }
 
-    /* ---------- Decide next ONLY if not already set ---------- */
-    if (!next) {
-      next =
-        status === "DONE"
-          ? STATES.TASK_DONE
-          : status === "PENDING"
-          ? STATES.TASK_PENDING
-          : RULES.nextOnUnclear(++s.unclearCount);
+    if (llm.intent === "DONE") {
+      status = "DONE";
+      s.confidenceScore = 70;
+    } else if (llm.intent === "PENDING") {
+      status = "PENDING";
+      s.confidenceScore = 70;
+    } else if (llm.intent === "BUSY") {
+      next = STATES.CALLBACK_TIME;
     }
   }
 
-  /* ---------- Flush user buffer ---------- */
+  /* ==================================================
+     🎯 DECIDE NEXT STATE
+  ================================================== */
+  if (!next) {
+    next =
+      status === "DONE"
+        ? STATES.TASK_DONE
+        : status === "PENDING"
+        ? STATES.TASK_PENDING
+        : RULES.nextOnUnclear(++s.unclearCount);
+  }
+
+  /* ---------- flush buffer ---------- */
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
@@ -470,11 +483,12 @@ app.post("/listen", async (req, res) => {
 
   s.agentTexts.push(RESPONSES[next].text);
 
-  /* ---------- END STATE ---------- */
+  /* ==================================================
+     🏁 END STATE
+  ================================================== */
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
-
     await logToSheet(s);
 
     if (s.batchId) {
@@ -496,7 +510,7 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  /* ---------- Continue conversation ---------- */
+  /* ---------- continue ---------- */
   s.state = next;
   return res.type("text/xml").send(`
 <Response>
@@ -507,7 +521,6 @@ app.post("/listen", async (req, res) => {
 </Response>
 `);
 });
-
 
 /* ======================
    CALL STATUS
