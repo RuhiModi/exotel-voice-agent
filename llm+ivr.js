@@ -2,7 +2,6 @@
  * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
  * State-based | Rule-driven | Scriptless
  * SINGLE + BULK CALL ENABLED
- * IVR + GROQ LLM (SAFE FALLBACK ONLY)
  *************************************************/
 
 import express from "express";
@@ -14,7 +13,6 @@ import { fileURLToPath } from "url";
 import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
-import fetch from "node-fetch"; // ✅ ADD ONLY
 
 import { STATES } from "./conversation/states.js";
 import { RESPONSES } from "./conversation/responses.js";
@@ -132,13 +130,14 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
+/* ✅ CRITICAL */
 function normalizePhone(phone) {
   if (!phone) return "";
   return phone.toString().replace(/\D/g, "").replace(/^91/, "");
 }
 
 /* ======================
-   INTENT DETECTION (IVR)
+   INTENT DETECTION
 ====================== */
 function detectTaskStatus(text) {
   const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે"];
@@ -168,48 +167,60 @@ function isBusyIntent(text) {
 }
 
 /* ======================
-   🔥 GROQ LLM (SAFE FALLBACK)
+   BULK HELPERS
 ====================== */
-async function groqAssist(text) {
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-70b-versatile",
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content: "Classify Gujarati intent strictly. Return JSON only."
-          },
-          {
-            role: "user",
-            content: `
-"${text}"
+async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
 
-Return:
-{
-  "intent": "DONE | PENDING | BUSY | OTHER",
-  "summary": "Gujarati summary"
-}`
-          }
-        ]
-      })
-    });
+  const rows = sheet.data.values || [];
+  const cleanPhone = normalizePhone(phone);
 
-    const data = await r.json();
-    return JSON.parse(data.choices[0].message.content);
-  } catch {
-    return { intent: "OTHER", summary: text };
+  for (let i = 1; i < rows.length; i++) {
+    if (
+      normalizePhone(rows[i][0]) === cleanPhone &&
+      rows[i][1] === batchId
+    ) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}:D${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[status, callSid || rows[i][3] || ""]]
+        }
+      });
+      return true;
+    }
   }
+  return false;
+}
+
+async function updateBulkByCallSid(callSid, status) {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
+
+  const rows = sheet.data.values || [];
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][3] === callSid) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[status]] }
+      });
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ======================
-   GOOGLE SHEET LOG
+   GOOGLE SHEET LOG (ASYNC)
 ====================== */
 async function logToSheet(s) {
   const duration = s.endTime
@@ -238,7 +249,102 @@ async function logToSheet(s) {
 }
 
 /* ======================
-   LISTEN (IVR + GROQ SAFE)
+   SINGLE CALL
+====================== */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+
+  const call = await twilioClient.calls.create({
+    to,
+    from: process.env.TWILIO_FROM_NUMBER,
+    url: `${BASE_URL}/answer`,
+    statusCallback: `${BASE_URL}/call-status`,
+    statusCallbackEvent: ["completed"],
+    method: "POST"
+  });
+
+  sessions.set(call.sid, {
+    sid: call.sid,
+    userPhone: to,
+    startTime: Date.now(),
+    endTime: null,
+    callbackTime: null,
+    state: STATES.INTRO,
+    agentTexts: [],
+    userTexts: [],
+    userBuffer: [],
+    unclearCount: 0,
+    confidenceScore: 0,
+    result: ""
+  });
+
+  res.json({ status: "calling" });
+});
+
+/* ======================
+   BULK CALL
+====================== */
+app.post("/bulk-call", async (req, res) => {
+  const { phones = [], batchId } = req.body;
+
+  phones.forEach((phone, index) => {
+    setTimeout(async () => {
+      try {
+        const call = await twilioClient.calls.create({
+          to: phone,
+          from: process.env.TWILIO_FROM_NUMBER,
+          url: `${BASE_URL}/answer`,
+          statusCallback: `${BASE_URL}/call-status`,
+          statusCallbackEvent: ["completed"],
+          method: "POST"
+        });
+
+        await updateBulkRowByPhone(phone, batchId, "Calling", call.sid);
+
+        sessions.set(call.sid, {
+          sid: call.sid,
+          userPhone: phone,
+          batchId,
+          startTime: Date.now(),
+          endTime: null,
+          callbackTime: null,
+          state: STATES.INTRO,
+          agentTexts: [],
+          userTexts: [],
+          userBuffer: [],
+          unclearCount: 0,
+          confidenceScore: 0,
+          result: ""
+        });
+      } catch (e) {
+        console.error("Bulk call failed:", phone, e.message);
+        await updateBulkRowByPhone(phone, batchId, "Failed");
+      }
+    }, index * 1500);
+  });
+
+  res.json({ status: "bulk calling started", total: phones.length });
+});
+
+/* ======================
+   ANSWER
+====================== */
+app.post("/answer", (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+  s.agentTexts.push(RESPONSES[STATES.INTRO].text);
+
+  res.type("text/xml").send(`
+<Response>
+  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
+    action="${BASE_URL}/listen"/>
+</Response>
+`);
+});
+
+/* ======================
+   LISTEN (FINAL FIX)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -250,38 +356,54 @@ app.post("/listen", async (req, res) => {
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN" timeout="12" speechTimeout="1"
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
   }
 
-  let { status, confidence } = detectTaskStatus(raw);
+  if (hasGujarati(raw)) s.userBuffer.push(normalizeMixedGujarati(raw));
 
-  if (confidence < 50) {
-    const llm = await groqAssist(raw);
-    s.userTexts.push(llm.summary);
-
-    if (llm.intent === "DONE") status = "DONE";
-    if (llm.intent === "PENDING") status = "PENDING";
-    if (llm.intent === "BUSY") status = "BUSY";
+  let next;
+  if (s.state === STATES.INTRO) {
+    next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+  } else if (s.state === STATES.CALLBACK_TIME) {
+    s.callbackTime = raw;
+    next = STATES.CALLBACK_CONFIRM;
+  } else {
+    const { status, confidence } = detectTaskStatus(raw);
+    s.confidenceScore = confidence;
+    next =
+      status === "DONE"
+        ? STATES.TASK_DONE
+        : status === "PENDING"
+        ? STATES.TASK_PENDING
+        : RULES.nextOnUnclear(++s.unclearCount);
   }
 
-  let next =
-    status === "DONE"
-      ? STATES.TASK_DONE
-      : status === "PENDING"
-      ? STATES.TASK_PENDING
-      : status === "BUSY"
-      ? STATES.CALLBACK_TIME
-      : RULES.nextOnUnclear(++s.unclearCount);
+  if (s.userBuffer.length) {
+    s.userTexts.push(s.userBuffer.join(" "));
+    s.userBuffer = [];
+  }
 
   s.agentTexts.push(RESPONSES[next].text);
 
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
+
     await logToSheet(s);
+
+    if (s.batchId) {
+      await updateBulkRowByPhone(
+        s.userPhone,
+        s.batchId,
+        "Completed",
+        s.sid
+      );
+    }
+
     sessions.delete(s.sid);
 
     return res.type("text/xml").send(`
@@ -296,10 +418,34 @@ app.post("/listen", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN" timeout="12" speechTimeout="1"
+  <Gather input="speech" language="gu-IN"
+    timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
+});
+
+/* ======================
+   CALL STATUS
+====================== */
+app.post("/call-status", async (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+
+  if (s) {
+    if (!s.result) {
+      s.result = "abandoned";
+      s.endTime = Date.now();
+      await logToSheet(s);
+    }
+
+    if (s.batchId) {
+      await updateBulkByCallSid(req.body.CallSid, "Completed");
+    }
+
+    sessions.delete(s.sid);
+  }
+
+  res.sendStatus(200);
 });
 
 /* ======================
@@ -307,5 +453,5 @@ app.post("/listen", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – IVR + GROQ SAFE HYBRID READY");
+  console.log("✅ Gujarati AI Voice Agent – SINGLE + BULK, FULLY STABLE");
 });
