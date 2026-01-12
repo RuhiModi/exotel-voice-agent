@@ -389,7 +389,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (STATE-AWARE, NO LOOP)
+   LISTEN (BUSY-SAFE, NO LOOP)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -412,63 +412,63 @@ app.post("/listen", async (req, res) => {
     s.userBuffer.push(normalizeMixedGujarati(raw));
   }
 
-  let status = null;
   let next = null;
-
-  const YES = ["હા", "haan", "yes", "true", "ok"];
-  const NO  = ["ના", "nahi", "no", "false", "not"];
+  let status = null;
 
   /* ==================================================
-     STATE-AWARE YES / NO
+     🔒 BUSY FLOW LOCK
   ================================================== */
-  if (YES.some(w => raw.includes(w))) {
-    if (s.state === STATES.TASK_CHECK) status = "DONE";
-    else if (s.state === STATES.TASK_PENDING) status = "PENDING";
-  }
-
-  if (NO.some(w => raw.includes(w))) {
-    if (s.state === STATES.TASK_CHECK) status = "PENDING";
-    else if (s.state === STATES.TASK_PENDING) status = "DONE";
+  if (isBusyIntent(raw)) {
+    s.isBusyFlow = true;
+    next = STATES.CALLBACK_TIME;
   }
 
   /* ==================================================
-     IVR KEYWORD DETECTION
+     CALLBACK TIME HANDLING
   ================================================== */
-  if (!status) {
-    const ivr = detectTaskStatus(raw);
-    status = ivr.status;
-    s.confidenceScore = ivr.confidence;
+  if (s.isBusyFlow && s.state === STATES.CALLBACK_TIME) {
+    s.callbackTime = raw;
+    next = STATES.CALLBACK_CONFIRM;
   }
 
   /* ==================================================
-     LLM FALLBACK (ONLY ONCE)
+     CALLBACK CONFIRM → END
   ================================================== */
-  if ((!status || s.confidenceScore < 50) && s.unclearCount < 2) {
-    const llm = await llmAssist(raw);
-
-    if (llm.summary) s.userTexts.push(llm.summary);
-
-    if (llm.intent === "DONE") status = "DONE";
-    else if (llm.intent === "PENDING") status = "PENDING";
-    else if (llm.intent === "BUSY") next = STATES.CALLBACK_TIME;
+  if (s.isBusyFlow && s.state === STATES.CALLBACK_CONFIRM) {
+    next = STATES.CALLBACK_CONFIRM; // end state
   }
 
   /* ==================================================
-     FINAL STATE DECISION
+     🚫 BLOCK PROBLEM FLOW IF BUSY
   ================================================== */
-  if (!next) {
+  if (!s.isBusyFlow && !next) {
+    const YES = ["હા", "yes", "haan"];
+    const NO = ["ના", "no", "nahi"];
+
+    if (YES.some(w => raw.includes(w))) {
+      if (s.state === STATES.TASK_CHECK) status = "DONE";
+      else if (s.state === STATES.TASK_PENDING) status = "PENDING";
+    }
+
+    if (NO.some(w => raw.includes(w))) {
+      if (s.state === STATES.TASK_CHECK) status = "PENDING";
+      else if (s.state === STATES.TASK_PENDING) status = "DONE";
+    }
+
+    if (!status) {
+      const ivr = detectTaskStatus(raw);
+      status = ivr.status;
+      s.confidenceScore = ivr.confidence;
+    }
+
     if (status === "DONE") next = STATES.TASK_DONE;
     else if (status === "PENDING") next = STATES.TASK_PENDING;
     else next = RULES.nextOnUnclear(++s.unclearCount);
   }
 
   /* ==================================================
-     HARD LOOP BREAKER
+     FINALIZE
   ================================================== */
-  if (s.unclearCount >= 3) {
-    next = STATES.CALLBACK_TIME;
-  }
-
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
