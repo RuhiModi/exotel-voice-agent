@@ -389,7 +389,7 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (BUSY-SAFE, NO LOOP)
+   LISTEN (LOOP-FREE, STATE-SAFE)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -413,61 +413,50 @@ app.post("/listen", async (req, res) => {
   }
 
   let next = null;
-  let status = null;
 
   /* ==================================================
-     🔒 BUSY FLOW LOCK
+     🔒 BUSY FLOW (HARD STOP)
   ================================================== */
   if (isBusyIntent(raw)) {
     s.isBusyFlow = true;
     next = STATES.CALLBACK_TIME;
   }
 
-  /* ==================================================
-     CALLBACK TIME HANDLING
-  ================================================== */
-  if (s.isBusyFlow && s.state === STATES.CALLBACK_TIME) {
-    s.callbackTime = raw;
-    next = STATES.CALLBACK_CONFIRM;
+  if (s.isBusyFlow) {
+    if (s.state === STATES.CALLBACK_TIME) {
+      s.callbackTime = raw;
+      next = STATES.CALLBACK_CONFIRM;
+    }
+    else if (s.state === STATES.CALLBACK_CONFIRM) {
+      next = STATES.CALLBACK_CONFIRM; // terminal
+    }
   }
 
   /* ==================================================
-     CALLBACK CONFIRM → END
-  ================================================== */
-  if (s.isBusyFlow && s.state === STATES.CALLBACK_CONFIRM) {
-    next = STATES.CALLBACK_CONFIRM; // end state
-  }
-
-  /* ==================================================
-     🚫 BLOCK PROBLEM FLOW IF BUSY
+     ✅ NORMAL TASK FLOW (ONLY IF NOT BUSY)
   ================================================== */
   if (!s.isBusyFlow && !next) {
-    const YES = ["હા", "yes", "haan"];
-    const NO = ["ના", "no", "nahi"];
+    const YES = ["હા", "haan", "yes", "થઈ ગયું", "પૂર્ણ થયું"];
+    const NO  = ["ના", "nahi", "no", "બાકી", "હજુ નથી", "પૂર્ણ નથી"];
 
     if (YES.some(w => raw.includes(w))) {
-      if (s.state === STATES.TASK_CHECK) status = "DONE";
-      else if (s.state === STATES.TASK_PENDING) status = "PENDING";
+      next = STATES.TASK_DONE;
     }
-
-    if (NO.some(w => raw.includes(w))) {
-      if (s.state === STATES.TASK_CHECK) status = "PENDING";
-      else if (s.state === STATES.TASK_PENDING) status = "DONE";
+    else if (NO.some(w => raw.includes(w))) {
+      next = STATES.TASK_PENDING;
     }
-
-    if (!status) {
+    else {
       const ivr = detectTaskStatus(raw);
-      status = ivr.status;
       s.confidenceScore = ivr.confidence;
-    }
 
-    if (status === "DONE") next = STATES.TASK_DONE;
-    else if (status === "PENDING") next = STATES.TASK_PENDING;
-    else next = RULES.nextOnUnclear(++s.unclearCount);
+      if (ivr.status === "DONE") next = STATES.TASK_DONE;
+      else if (ivr.status === "PENDING") next = STATES.TASK_PENDING;
+      else next = RULES.nextOnUnclear(++s.unclearCount);
+    }
   }
 
   /* ==================================================
-     FINALIZE
+     📦 STORE USER TEXT
   ================================================== */
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
@@ -476,7 +465,14 @@ app.post("/listen", async (req, res) => {
 
   s.agentTexts.push(RESPONSES[next].text);
 
-  if (RESPONSES[next].end) {
+  /* ==================================================
+     🛑 TERMINAL STATES (NO LOOP)
+  ================================================== */
+  if (
+    next === STATES.TASK_DONE ||
+    next === STATES.TASK_PENDING ||
+    next === STATES.CALLBACK_CONFIRM
+  ) {
     s.result = next;
     s.endTime = Date.now();
     await logToSheet(s);
@@ -500,6 +496,9 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
+  /* ==================================================
+     CONTINUE FLOW
+  ================================================== */
   s.state = next;
   return res.type("text/xml").send(`
 <Response>
