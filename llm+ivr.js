@@ -136,6 +136,51 @@ function normalizePhone(phone) {
   return phone.toString().replace(/\D/g, "").replace(/^91/, "");
 }
 
+// 🔹 LLM ASSIST — intent helper only (SAFE)
+async function llmAssist(text) {
+  try {
+    const resp = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-70b-versatile",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You classify Gujarati user speech. Respond ONLY in JSON."
+            },
+            {
+              role: "user",
+              content: `
+Text:
+"${text}"
+
+Return ONLY:
+{
+  "intent": "DONE | PENDING | BUSY | OTHER",
+  "confidence": 0-100,
+  "summary": "short Gujarati summary"
+}`
+            }
+          ],
+          temperature: 0
+        })
+      }
+    );
+
+    const data = await resp.json();
+    return JSON.parse(data.choices[0].message.content);
+  } catch {
+    return { intent: "OTHER", confidence: 0, summary: text };
+  }
+}
+
 /* ======================
    INTENT DETECTION
 ====================== */
@@ -344,15 +389,17 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   LISTEN (FINAL FIX)
+   LISTEN (IVR + LLM HYBRID – FINAL STABLE)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
   const raw = (req.body.SpeechResult || "").trim();
 
+  /* ---------- No speech detected ---------- */
   if (!raw) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
+
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
@@ -363,25 +410,59 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  if (hasGujarati(raw)) s.userBuffer.push(normalizeMixedGujarati(raw));
+  /* ---------- Normalize Gujarati ---------- */
+  if (hasGujarati(raw)) {
+    s.userBuffer.push(normalizeMixedGujarati(raw));
+  }
 
-  let next;
+  let next; // IMPORTANT: declared once
+
+  /* ---------- FLOW LOGIC ---------- */
   if (s.state === STATES.INTRO) {
     next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+
   } else if (s.state === STATES.CALLBACK_TIME) {
     s.callbackTime = raw;
     next = STATES.CALLBACK_CONFIRM;
+
   } else {
-    const { status, confidence } = detectTaskStatus(raw);
+    /* ---------- IVR detection ---------- */
+    let { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
-    next =
-      status === "DONE"
-        ? STATES.TASK_DONE
-        : status === "PENDING"
-        ? STATES.TASK_PENDING
-        : RULES.nextOnUnclear(++s.unclearCount);
+
+    /* ---------- LLM fallback ONLY if IVR unsure ---------- */
+    if (confidence < 50) {
+      const llm = await llmAssist(raw);
+
+      if (llm.summary) {
+        s.userTexts.push(llm.summary);
+      }
+
+      if (llm.intent === "DONE") {
+        status = "DONE";
+        s.confidenceScore = llm.confidence || 70;
+
+      } else if (llm.intent === "PENDING") {
+        status = "PENDING";
+        s.confidenceScore = llm.confidence || 70;
+
+      } else if (llm.intent === "BUSY") {
+        next = STATES.CALLBACK_TIME;
+      }
+    }
+
+    /* ---------- Decide next ONLY if not already set ---------- */
+    if (!next) {
+      next =
+        status === "DONE"
+          ? STATES.TASK_DONE
+          : status === "PENDING"
+          ? STATES.TASK_PENDING
+          : RULES.nextOnUnclear(++s.unclearCount);
+    }
   }
 
+  /* ---------- Flush user buffer ---------- */
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
@@ -389,6 +470,7 @@ app.post("/listen", async (req, res) => {
 
   s.agentTexts.push(RESPONSES[next].text);
 
+  /* ---------- END STATE ---------- */
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
@@ -414,8 +496,9 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
+  /* ---------- Continue conversation ---------- */
   s.state = next;
-  res.type("text/xml").send(`
+  return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
   <Gather input="speech" language="gu-IN"
@@ -424,6 +507,7 @@ app.post("/listen", async (req, res) => {
 </Response>
 `);
 });
+
 
 /* ======================
    CALL STATUS
