@@ -2,7 +2,7 @@
  * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
  * State-based | Rule-driven | Scriptless
  * SINGLE + BULK CALL ENABLED
- * IVR + GROQ LLM HYBRID (SAFE MODE)
+ * IVR + GROQ LLM (SAFE FALLBACK ONLY)
  *************************************************/
 
 import express from "express";
@@ -14,7 +14,7 @@ import { fileURLToPath } from "url";
 import twilio from "twilio";
 import textToSpeech from "@google-cloud/text-to-speech";
 import { google } from "googleapis";
-import fetch from "node-fetch"; // ✅ NEW (GROQ LLM)
+import fetch from "node-fetch"; // ✅ ADD ONLY
 
 import { STATES } from "./conversation/states.js";
 import { RESPONSES } from "./conversation/responses.js";
@@ -168,45 +168,40 @@ function isBusyIntent(text) {
 }
 
 /* ======================
-   🔥 GROQ LLM ASSIST (SAFE FALLBACK)
+   🔥 GROQ LLM (SAFE FALLBACK)
 ====================== */
-async function llmAssist(text) {
+async function groqAssist(text) {
   try {
-    const resp = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "llama-3.1-70b-versatile",
-          messages: [
-            {
-              role: "system",
-              content:
-                "Classify Gujarati speech strictly. Respond ONLY in JSON."
-            },
-            {
-              role: "user",
-              content: `
-Text:
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-70b-versatile",
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content: "Classify Gujarati intent strictly. Return JSON only."
+          },
+          {
+            role: "user",
+            content: `
 "${text}"
 
-Return ONLY:
+Return:
 {
   "intent": "DONE | PENDING | BUSY | OTHER",
-  "summary": "short Gujarati summary"
+  "summary": "Gujarati summary"
 }`
-            }
-          ],
-          temperature: 0
-        })
-      }
-    );
+          }
+        ]
+      })
+    });
 
-    const data = await resp.json();
+    const data = await r.json();
     return JSON.parse(data.choices[0].message.content);
   } catch {
     return { intent: "OTHER", summary: text };
@@ -243,24 +238,7 @@ async function logToSheet(s) {
 }
 
 /* ======================
-   ANSWER
-====================== */
-app.post("/answer", (req, res) => {
-  const s = sessions.get(req.body.CallSid);
-  s.agentTexts.push(RESPONSES[STATES.INTRO].text);
-
-  res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
-});
-
-/* ======================
-   LISTEN (IVR + GROQ HYBRID)
+   LISTEN (IVR + GROQ SAFE)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
@@ -272,40 +250,31 @@ app.post("/listen", async (req, res) => {
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
+  <Gather input="speech" language="gu-IN" timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
   }
 
-  if (hasGujarati(raw)) s.userBuffer.push(normalizeMixedGujarati(raw));
-
   let { status, confidence } = detectTaskStatus(raw);
-  let next;
 
   if (confidence < 50) {
-    const llm = await llmAssist(raw);
+    const llm = await groqAssist(raw);
     s.userTexts.push(llm.summary);
 
     if (llm.intent === "DONE") status = "DONE";
-    else if (llm.intent === "PENDING") status = "PENDING";
-    else if (llm.intent === "BUSY") next = STATES.CALLBACK_TIME;
+    if (llm.intent === "PENDING") status = "PENDING";
+    if (llm.intent === "BUSY") status = "BUSY";
   }
 
-  if (!next) {
-    next =
-      status === "DONE"
-        ? STATES.TASK_DONE
-        : status === "PENDING"
-        ? STATES.TASK_PENDING
-        : RULES.nextOnUnclear(++s.unclearCount);
-  }
-
-  if (s.userBuffer.length) {
-    s.userTexts.push(s.userBuffer.join(" "));
-    s.userBuffer = [];
-  }
+  let next =
+    status === "DONE"
+      ? STATES.TASK_DONE
+      : status === "PENDING"
+      ? STATES.TASK_PENDING
+      : status === "BUSY"
+      ? STATES.CALLBACK_TIME
+      : RULES.nextOnUnclear(++s.unclearCount);
 
   s.agentTexts.push(RESPONSES[next].text);
 
@@ -327,8 +296,7 @@ app.post("/listen", async (req, res) => {
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="12" speechTimeout="1"
+  <Gather input="speech" language="gu-IN" timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
@@ -339,5 +307,5 @@ app.post("/listen", async (req, res) => {
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent – IVR + GROQ LLM HYBRID READY");
+  console.log("✅ Gujarati AI Voice Agent – IVR + GROQ SAFE HYBRID READY");
 });
