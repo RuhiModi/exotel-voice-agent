@@ -366,6 +366,7 @@ app.post("/call-status", async (req, res) => {
    START
 ====================== */
 app.listen(PORT, async () => {
+  console.log("STATES.INTRO =", STATES.INTRO); // 👈 ADD THIS
   await preloadAll();
   console.log("✅ Gujarati AI Voice Agent – EXOTEL VERSION READY");
 });
