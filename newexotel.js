@@ -41,6 +41,47 @@ const EXOTEL_CALLER_ID = process.env.EXOTEL_CALLER_ID;
 const EXOTEL_URL = `https://${EXOTEL_SID}:${EXOTEL_TOKEN}@api.exotel.com/v1/Accounts/${EXOTEL_SID}/Calls/connect.json`;
 
 /* ======================
+   HEALTH CHECK (EXOTEL)
+====================== */
+app.get("/health", (req, res) => {
+  try {
+    const requiredFiles = [
+      "intro.mp3",
+      "task_check.mp3",
+      "task_done.mp3"
+    ];
+
+    const audioStatus = requiredFiles.map(file => {
+      const filePath = path.join(AUDIO_DIR, file);
+      const exists = fs.existsSync(filePath);
+      const size = exists ? fs.statSync(filePath).size : 0;
+
+      return {
+        file,
+        exists,
+        size,
+        valid: exists && size > 1000
+      };
+    });
+
+    const allAudioValid = audioStatus.every(f => f.valid);
+
+    res.json({
+      status: allAudioValid ? "OK" : "DEGRADED",
+      server: "running",
+      baseUrl: BASE_URL,
+      audio: audioStatus,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: "ERROR",
+      message: err.message
+    });
+  }
+});
+
+/* ======================
    GOOGLE TTS
 ====================== */
 const ttsClient = new textToSpeech.TextToSpeechClient();
