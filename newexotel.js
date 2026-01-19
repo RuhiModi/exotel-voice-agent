@@ -88,7 +88,7 @@ async function generateAudio(text, file) {
 
 async function preloadAll() {
   for (const key in RESPONSES) {
-    await generateAudio(RESPONSES[key].text, `${key}.mp3`);
+    await generateAudio(RESPONSES[key].text, `${key.toLowerCase()}.mp3`);
   }
 }
 
@@ -267,7 +267,7 @@ app.post("/answer", (req, res) => {
 
   res.type("text/xml").send(`
 <Response>
-  <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
+  <Play>${BASE_URL}/audio/${STATES.INTRO.toLowerCase()}.mp3</Play>
   <Gather input="speech" language="gu-IN"
     timeout="12" speechTimeout="1"
     action="${BASE_URL}/listen"/>
@@ -288,7 +288,7 @@ app.post("/listen", async (req, res) => {
     s.agentTexts.push(RESPONSES[next].text);
     return res.type("text/xml").send(`
 <Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
+  <Play>${BASE_URL}/audio/${next.toLowerCase()}.mp3</Play>
   <Gather input="speech" language="gu-IN"
     action="${BASE_URL}/listen"/>
 </Response>
