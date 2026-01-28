@@ -294,7 +294,8 @@ async function logToSheet(s) {
         s.rawUserSpeech.join(" | "),
         s.result,
         duration,
-        s.confidenceScore ?? 0
+        s.confidenceScore ?? 0,
+        s.conversationFlow.join("\n") 
       ]]
     }
   });
@@ -324,12 +325,13 @@ app.post("/call", async (req, res) => {
     state: STATES.INTRO,
     agentTexts: [],
     userTexts: [],
-    hasLogged: false,
     userBuffer: [],
     rawUserSpeech: [],
     liveBuffer: "",
     unclearCount: 0,
     confidenceScore: 0,
+    hasLogged: false,
+    conversationFlow: [], 
     result: ""
   });
 
@@ -358,7 +360,6 @@ app.post("/bulk-call", async (req, res) => {
 
         sessions.set(call.sid, {
           sid: call.sid,
-          hasLogged: false, 
           userPhone: phone,
           batchId,
           startTime: Date.now(),
@@ -372,6 +373,8 @@ app.post("/bulk-call", async (req, res) => {
           liveBuffer: "",
           unclearCount: 0,
           confidenceScore: 0,
+          conversationFlow: [],
+          hasLogged: false,  
           result: ""
         });
       } catch (e) {
@@ -390,6 +393,7 @@ app.post("/bulk-call", async (req, res) => {
 app.post("/answer", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   s.agentTexts.push(RESPONSES[STATES.INTRO].text);
+  s.conversationFlow.push(`AI: ${RESPONSES[STATES.INTRO].text}`); 
 
   res.type("text/xml").send(`
 <Response>
@@ -439,6 +443,7 @@ app.post("/listen", async (req, res) => {
     s.unclearCount = 0;
     s.userBuffer = [];
     s.agentTexts.push(RESPONSES[next].text);
+    s.conversationFlow.push(`AI: ${RESPONSES[next].text}`);
 
     return res.type("text/xml").send(
       `<Response>
@@ -473,6 +478,9 @@ app.post("/listen", async (req, res) => {
     );
   }
 
+  // ✅ Log final user utterance ONCE (conversation transcript) 
+  s.conversationFlow.push(`User: ${raw}`);
+   
   /* ======================
      NORMAL USER INPUT STORAGE
   ====================== */
