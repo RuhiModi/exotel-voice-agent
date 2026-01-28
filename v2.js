@@ -295,7 +295,7 @@ async function logToSheet(s) {
         s.result,
         duration,
         s.confidenceScore ?? 0,
-        s.callbackTime ?? ""
+        s.callbackTime ?? "",
         s.conversationFlow.join("\n") 
       ]]
     }
