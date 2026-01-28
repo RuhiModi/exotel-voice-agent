@@ -291,7 +291,7 @@ async function logToSheet(s) {
         s.userPhone,
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
-        s.rawUserSpeech.join(" | "),
+        //s.rawUserSpeech.join(" | "),
         s.result,
         duration,
         s.confidenceScore ?? 0,
@@ -327,7 +327,7 @@ app.post("/call", async (req, res) => {
     agentTexts: [],
     userTexts: [],
     userBuffer: [],
-    rawUserSpeech: [],
+    //rawUserSpeech: [],
     liveBuffer: "",
     unclearCount: 0,
     confidenceScore: 0,
@@ -370,7 +370,7 @@ app.post("/bulk-call", async (req, res) => {
           agentTexts: [],
           userTexts: [],
           userBuffer: [],
-          rawUserSpeech: [],
+         // rawUserSpeech: [],
           liveBuffer: "",
           unclearCount: 0,
           confidenceScore: 0,
@@ -432,7 +432,7 @@ app.post("/listen", async (req, res) => {
   const raw = normalizeUserText(req.body.SpeechResult || "");
 
   s.liveBuffer = "";
-  s.rawUserSpeech.push(raw);
+ // s.rawUserSpeech.push(raw);
 
   /* ======================
      🔑 PRIORITY 1: BUSY INTENT (ABSOLUTE)
