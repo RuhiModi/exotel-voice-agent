@@ -291,10 +291,11 @@ async function logToSheet(s) {
         s.userPhone,
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
-        s.rawUserSpeech.join(" | "),
+        //s.rawUserSpeech.join(" | "),
         s.result,
         duration,
         s.confidenceScore ?? 0,
+        s.callbackTime ?? ""
         s.conversationFlow.join("\n") 
       ]]
     }
@@ -326,7 +327,7 @@ app.post("/call", async (req, res) => {
     agentTexts: [],
     userTexts: [],
     userBuffer: [],
-    rawUserSpeech: [],
+    //rawUserSpeech: [],
     liveBuffer: "",
     unclearCount: 0,
     confidenceScore: 0,
@@ -369,7 +370,7 @@ app.post("/bulk-call", async (req, res) => {
           agentTexts: [],
           userTexts: [],
           userBuffer: [],
-          rawUserSpeech: [],
+          //rawUserSpeech: [],
           liveBuffer: "",
           unclearCount: 0,
           confidenceScore: 0,
