@@ -382,6 +382,8 @@ app.post("/listen", async (req, res) => {
 
   s.liveBuffer = "";
   s.rawUserSpeech.push(raw);
+  if (!raw || raw.length < 3) return;
+ 
 
   if (raw.split(" ").length < 3) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
@@ -408,7 +410,7 @@ app.post("/listen", async (req, res) => {
     s.callbackTime = raw;
     next = STATES.CALLBACK_CONFIRM;
   } else if (s.state === STATES.TASK_PENDING) {
-    s.userTexts.push(raw);
+    //s.userTexts.push(raw);
     next = STATES.PROBLEM_RECORDED;
   } else {
     const { status, confidence } = detectTaskStatus(raw);
@@ -420,12 +422,25 @@ app.post("/listen", async (req, res) => {
         ? STATES.TASK_PENDING
         : RULES.nextOnUnclear(++s.unclearCount);
   }
-
+/* ======================
   if (s.userBuffer.length) {
     s.userTexts.push(s.userBuffer.join(" "));
     s.userBuffer = [];
   }
+   
+====================== */ 
 
+  if (s.userBuffer.length) {
+  const combined = s.userBuffer.join(" ");
+  const last = s.userTexts[s.userTexts.length - 1];
+
+  if (combined && combined !== last) {
+    s.userTexts.push(combined);
+  }
+
+  s.userBuffer = [];
+}
+ 
   s.agentTexts.push(RESPONSES[next].text);
 
   if (RESPONSES[next].end) {
