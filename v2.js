@@ -437,7 +437,12 @@ app.post("/listen", async (req, res) => {
   /* ======================
      🔑 PRIORITY 1: BUSY INTENT (ABSOLUTE)
   ====================== */
-  if (s.state === STATES.INTRO && isBusyIntent(raw)) {
+  
+   if (s.state === STATES.INTRO && isBusyIntent(raw)) {
+
+          // 🔑 LOG USER BEFORE EARLY RETURN
+    s.conversationFlow.push(`User: ${raw}`);
+      
     const next = STATES.CALLBACK_TIME;
 
     s.state = next;          // 🔒 lock state
