@@ -502,25 +502,31 @@ app.post("/listen", async (req, res) => {
     next = STATES.PROBLEM_RECORDED;
 
   } else {
-    const { status, confidence } = detectTaskStatus(raw);
-    s.confidenceScore = confidence;
+  const { status, confidence } = detectTaskStatus(raw);
+  s.confidenceScore = confidence;
 
-    next =
-      status === "DONE"
-        ? STATES.TASK_DONE
-        : status === "PENDING"
-        ? STATES.TASK_PENDING
+  if (status === "DONE") {
+    next = STATES.TASK_DONE;
 
-        if (s.unclearCount === 2) {
-          const llmResult = await groqClassify(raw);
+  } else if (status === "PENDING") {
+    next = STATES.TASK_PENDING;
 
-          if (llmResult === "DONE") next = STATES.TASK_DONE;
-          else if (llmResult === "PENDING") next = STATES.TASK_PENDING;
-          else if (llmResult === "BUSY") next = STATES.CALLBACK_TIME;
-          else next = STATES.CONFIRM_TASK;
-        }
-      //  : RULES.nextOnUnclear(++s.unclearCount);
+  } else {
+    // unclear case
+    s.unclearCount++;
+
+    if (s.unclearCount === 1) {
+      next = STATES.RETRY_TASK_CHECK;
+
+    } else if (s.unclearCount === 2) {
+      next = STATES.CONFIRM_TASK;
+
+    } else {
+      next = STATES.ESCALATE;
+    }
   }
+}
+
 
   /* ======================
      FINAL USER TEXT FLUSH (DEDUP SAFE)
