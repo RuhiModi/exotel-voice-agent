@@ -365,7 +365,10 @@ app.post("/partial", (req, res) => {
   if (!s) return res.sendStatus(200);
 
   const partial = (req.body.UnstableSpeechResult || "").trim();
-  if (partial) s.liveBuffer += " " + partial;
+  if (partial) {
+  s.lastPartialAt = Date.now(); // just a signal, not text
+  }
+
 
   res.sendStatus(200);
 });
@@ -375,10 +378,8 @@ app.post("/partial", (req, res) => {
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-
-  const raw = normalizeUserText(
-    `${s.liveBuffer} ${(req.body.SpeechResult || "")}`
-  );
+   
+  const raw = normalizeUserText(req.body.SpeechResult || "");
 
   s.liveBuffer = "";
   s.rawUserSpeech.push(raw);
