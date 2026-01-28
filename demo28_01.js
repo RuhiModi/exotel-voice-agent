@@ -385,8 +385,25 @@ app.post("/listen", async (req, res) => {
 
   s.liveBuffer = "";
   s.rawUserSpeech.push(raw);
-  if (!raw || raw.length < 3) return;
- 
+  //if (!raw || raw.length < 3) return;
+  if (!raw || raw.length < 3) {
+  const next = RULES.nextOnUnclear(++s.unclearCount);
+  s.agentTexts.push(RESPONSES[next].text);
+
+  return res.type("text/xml").send(
+    `<Response>
+      <Play>${BASE_URL}/audio/${next}.mp3</Play>
+      <Gather input="speech"
+        language="gu-IN"
+        timeout="15"
+        speechTimeout="auto"
+        partialResultCallback="${BASE_URL}/partial"
+        action="${BASE_URL}/listen"/>
+    </Response>`
+  );
+}
+
+  
 
   if (raw.split(" ").length < 3) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
@@ -403,8 +420,10 @@ app.post("/listen", async (req, res) => {
 `);
   }
 
-  if (hasGujarati(raw)) s.userBuffer.push(raw);
-  else s.userBuffer.push(raw);
+ // if (hasGujarati(raw)) s.userBuffer.push(raw);
+// else s.userBuffer.push(raw);
+  s.userBuffer.push(raw);
+
 
   let next;
   if (s.state === STATES.INTRO) {
@@ -491,27 +510,17 @@ app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
   if (s && !s.hasLogged) {
-  s.result = s.result || "abandoned";
-  s.endTime = Date.now();
-  await logToSheet(s);
-  s.hasLogged = true;
-}
+    s.result = s.result || "abandoned";
+    s.endTime = Date.now();
+    await logToSheet(s);
+    s.hasLogged = true;
+  }
 
-   
-/* ======================   
+  if (s && s.batchId) {
+    await updateBulkByCallSid(req.body.CallSid, "Completed");
+  }
+
   if (s) {
-    if (!s.result) {
-      s.result = "abandoned";
-      s.endTime = Date.now();
-      await logToSheet(s);
-    }
-====================== */
-
-   
-    if (s.batchId) {
-      await updateBulkByCallSid(req.body.CallSid, "Completed");
-    }
-
     sessions.delete(s.sid);
   }
 
