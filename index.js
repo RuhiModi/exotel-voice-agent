@@ -1,2 +1,2 @@
-import "./newexotel.js";
+import "./bulkcall.js";
 
