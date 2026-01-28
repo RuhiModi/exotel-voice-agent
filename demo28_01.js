@@ -1,6 +1,6 @@
 /*************************************************
- * GUJARATI AI VOICE AGENT – HUMANATIC v2
- * Stable | Buffer-based | Long-speech safe
+ * GUJARATI AI VOICE AGENT – HUMANATIC + ROBUST
+ * State-based | Rule-driven | Scriptless
  * SINGLE + BULK CALL ENABLED
  *************************************************/
 
@@ -91,19 +91,36 @@ async function preloadAll() {
 }
 
 /* ======================
+   TIME HELPERS
+====================== */
+function formatIST(ts) {
+  return new Date(ts).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: true
+  });
+}
+
+/* ======================
    HELPERS
 ====================== */
+function hasGujarati(text) {
+  return /[\u0A80-\u0AFF]/.test(text);
+}
+
 function normalizeMixedGujarati(text) {
   const dict = {
     aadhar: "આધાર",
     aadhaar: "આધાર",
     card: "કાર્ડ",
+    data: "ડેટા",
+    entry: "એન્ટ્રી",
     update: "સુધારો",
     correction: "સુધારો",
     name: "નામ",
     address: "સરનામું",
     mobile: "મોબાઇલ",
-    number: "નંબર"
+    number: "નંબર",
+    change: "ફેરફાર"
   };
 
   let out = text;
@@ -113,6 +130,7 @@ function normalizeMixedGujarati(text) {
   return out;
 }
 
+/* ➕ NEW – DO NOT REMOVE EXISTING HELPERS */
 function normalizeUserText(text) {
   if (!text) return "";
   let out = text.toLowerCase();
@@ -121,8 +139,17 @@ function normalizeUserText(text) {
   return out.trim();
 }
 
+/* ✅ CRITICAL */
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone.toString().replace(/\D/g, "").replace(/^91/, "");
+}
+
+/* ======================
+   INTENT DETECTION
+====================== */
 function detectTaskStatus(text) {
-  const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "pending"];
+  const pending = ["નથી", "બાકી", "હજુ", "પૂર્ણ નથી", "ચાલુ છે", "pending"];
   const done = ["પૂર્ણ થયું", "થઈ ગયું", "થયું છે", "મળી ગયું", "done"];
 
   const p = pending.some(w => text.includes(w));
@@ -134,57 +161,196 @@ function detectTaskStatus(text) {
   return { status: "UNCLEAR", confidence: 30 };
 }
 
+/* ======================
+   BUSY INTENT
+====================== */
 function isBusyIntent(text) {
   return [
     "સમય નથી",
     "હવે નથી",
-    "later",
-    "call later",
     "પછી ફોન",
-    "બાદમાં વાત"
+    "બાદમાં ફોન",
+    "later",
+    "call later"
   ].some(p => text.includes(p));
+}
+
+/* ======================
+   BULK HELPERS
+====================== */
+async function updateBulkRowByPhone(phone, batchId, status, callSid = "") {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
+
+  const rows = sheet.data.values || [];
+  const cleanPhone = normalizePhone(phone);
+
+  for (let i = 1; i < rows.length; i++) {
+    if (
+      normalizePhone(rows[i][0]) === cleanPhone &&
+      rows[i][1] === batchId
+    ) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}:D${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[status, callSid || rows[i][3] || ""]]
+        }
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+async function updateBulkByCallSid(callSid, status) {
+  const sheet = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Bulk_Calls!A:D"
+  });
+
+  const rows = sheet.data.values || [];
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][3] === callSid) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Bulk_Calls!C${i + 1}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [[status]] }
+      });
+      return true;
+    }
+  }
+  return false;
 }
 
 /* ======================
    GOOGLE SHEET LOG
 ====================== */
 async function logToSheet(s) {
+  const duration = s.endTime
+    ? Math.floor((s.endTime - s.startTime) / 1000)
+    : 0;
+
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: "Call_Logs!A:J",
     valueInputOption: "USER_ENTERED",
     requestBody: {
       values: [[
-        new Date(s.startTime).toLocaleString("en-IN"),
-        new Date(s.endTime).toLocaleString("en-IN"),
+        formatIST(s.startTime),
+        formatIST(s.endTime),
         s.sid,
         s.userPhone,
         s.agentTexts.join(" | "),
         s.userTexts.join(" | "),
         s.rawUserSpeech.join(" | "),
         s.result,
-        Math.floor((s.endTime - s.startTime) / 1000),
-        s.confidenceScore || 0
+        duration,
+        s.confidenceScore ?? 0
       ]]
     }
   });
 }
 
 /* ======================
+   SINGLE CALL
+====================== */
+app.post("/call", async (req, res) => {
+  const { to } = req.body;
+
+  const call = await twilioClient.calls.create({
+    to,
+    from: process.env.TWILIO_FROM_NUMBER,
+    url: `${BASE_URL}/answer`,
+    statusCallback: `${BASE_URL}/call-status`,
+    statusCallbackEvent: ["completed"],
+    method: "POST"
+  });
+
+  sessions.set(call.sid, {
+    sid: call.sid,
+    userPhone: to,
+    startTime: Date.now(),
+    endTime: null,
+    callbackTime: null,
+    state: STATES.INTRO,
+    agentTexts: [],
+    userTexts: [],
+    userBuffer: [],
+    rawUserSpeech: [],
+    liveBuffer: "",
+    unclearCount: 0,
+    confidenceScore: 0,
+    result: ""
+  });
+
+  res.json({ status: "calling" });
+});
+
+/* ======================
+   BULK CALL
+====================== */
+app.post("/bulk-call", async (req, res) => {
+  const { phones = [], batchId } = req.body;
+
+  phones.forEach((phone, index) => {
+    setTimeout(async () => {
+      try {
+        const call = await twilioClient.calls.create({
+          to: phone,
+          from: process.env.TWILIO_FROM_NUMBER,
+          url: `${BASE_URL}/answer`,
+          statusCallback: `${BASE_URL}/call-status`,
+          statusCallbackEvent: ["completed"],
+          method: "POST"
+        });
+
+        await updateBulkRowByPhone(phone, batchId, "Calling", call.sid);
+
+        sessions.set(call.sid, {
+          sid: call.sid,
+          userPhone: phone,
+          batchId,
+          startTime: Date.now(),
+          endTime: null,
+          callbackTime: null,
+          state: STATES.INTRO,
+          agentTexts: [],
+          userTexts: [],
+          userBuffer: [],
+          rawUserSpeech: [],
+          liveBuffer: "",
+          unclearCount: 0,
+          confidenceScore: 0,
+          result: ""
+        });
+      } catch (e) {
+        console.error("Bulk call failed:", phone, e.message);
+        await updateBulkRowByPhone(phone, batchId, "Failed");
+      }
+    }, index * 1500);
+  });
+
+  res.json({ status: "bulk calling started", total: phones.length });
+});
+
+/* ======================
    ANSWER
 ====================== */
 app.post("/answer", (req, res) => {
   const s = sessions.get(req.body.CallSid);
-
   s.agentTexts.push(RESPONSES[STATES.INTRO].text);
 
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${STATES.INTRO}.mp3</Play>
-  <Gather input="speech"
-    language="gu-IN"
-    timeout="15"
-    speechTimeout="auto"
+  <Gather input="speech" language="gu-IN"
+    timeout="15" speechTimeout="auto"
     partialResultCallback="${BASE_URL}/partial"
     action="${BASE_URL}/listen"/>
 </Response>
@@ -192,16 +358,15 @@ app.post("/answer", (req, res) => {
 });
 
 /* ======================
-   PARTIAL SPEECH BUFFER
+   PARTIAL BUFFER
 ====================== */
 app.post("/partial", (req, res) => {
   const s = sessions.get(req.body.CallSid);
   if (!s) return res.sendStatus(200);
 
   const partial = (req.body.UnstableSpeechResult || "").trim();
-  if (partial) {
-    s.liveBuffer = (s.liveBuffer || "") + " " + partial;
-  }
+  if (partial) s.liveBuffer += " " + partial;
+
   res.sendStatus(200);
 });
 
@@ -211,62 +376,73 @@ app.post("/partial", (req, res) => {
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
-  const finalSpeech = normalizeUserText(
-    `${s.liveBuffer || ""} ${req.body.SpeechResult || ""}`
+  const raw = normalizeUserText(
+    `${s.liveBuffer} ${(req.body.SpeechResult || "")}`
   );
 
   s.liveBuffer = "";
-  s.rawUserSpeech.push(finalSpeech);
+  s.rawUserSpeech.push(raw);
 
-  if (finalSpeech.split(" ").length < 3) {
+  if (raw.split(" ").length < 3) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
 
     return res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech"
-    language="gu-IN"
-    timeout="15"
-    speechTimeout="auto"
+  <Gather input="speech" language="gu-IN"
+    timeout="15" speechTimeout="auto"
     partialResultCallback="${BASE_URL}/partial"
     action="${BASE_URL}/listen"/>
 </Response>
 `);
   }
 
-  let next;
+  if (hasGujarati(raw)) s.userBuffer.push(raw);
+  else s.userBuffer.push(raw);
 
+  let next;
   if (s.state === STATES.INTRO) {
-    next = isBusyIntent(finalSpeech)
-      ? STATES.CALLBACK_TIME
-      : STATES.TASK_CHECK;
+    next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+  } else if (s.state === STATES.CALLBACK_TIME) {
+    s.callbackTime = raw;
+    next = STATES.CALLBACK_CONFIRM;
   } else if (s.state === STATES.TASK_PENDING) {
-    s.userTexts.push(finalSpeech);
+    s.userTexts.push(raw);
     next = STATES.PROBLEM_RECORDED;
   } else {
-    const { status, confidence } = detectTaskStatus(finalSpeech);
+    const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
-
-    if (RULES.shouldConfirm(confidence)) {
-      next = STATES.CONFIRM_TASK;
-    } else {
-      next =
-        status === "DONE"
-          ? STATES.TASK_DONE
-          : status === "PENDING"
-          ? STATES.TASK_PENDING
-          : RULES.nextOnUnclear(++s.unclearCount);
-    }
+    next =
+      status === "DONE"
+        ? STATES.TASK_DONE
+        : status === "PENDING"
+        ? STATES.TASK_PENDING
+        : RULES.nextOnUnclear(++s.unclearCount);
   }
 
-  s.userTexts.push(finalSpeech);
+  if (s.userBuffer.length) {
+    s.userTexts.push(s.userBuffer.join(" "));
+    s.userBuffer = [];
+  }
+
   s.agentTexts.push(RESPONSES[next].text);
 
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
+
     await logToSheet(s);
+
+    if (s.batchId) {
+      await updateBulkRowByPhone(
+        s.userPhone,
+        s.batchId,
+        "Completed",
+        s.sid
+      );
+    }
+
     sessions.delete(s.sid);
 
     return res.type("text/xml").send(`
@@ -278,14 +454,11 @@ app.post("/listen", async (req, res) => {
   }
 
   s.state = next;
-
   res.type("text/xml").send(`
 <Response>
   <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech"
-    language="gu-IN"
-    timeout="15"
-    speechTimeout="auto"
+  <Gather input="speech" language="gu-IN"
+    timeout="15" speechTimeout="auto"
     partialResultCallback="${BASE_URL}/partial"
     action="${BASE_URL}/listen"/>
 </Response>
@@ -293,9 +466,32 @@ app.post("/listen", async (req, res) => {
 });
 
 /* ======================
+   CALL STATUS
+====================== */
+app.post("/call-status", async (req, res) => {
+  const s = sessions.get(req.body.CallSid);
+
+  if (s) {
+    if (!s.result) {
+      s.result = "abandoned";
+      s.endTime = Date.now();
+      await logToSheet(s);
+    }
+
+    if (s.batchId) {
+      await updateBulkByCallSid(req.body.CallSid, "Completed");
+    }
+
+    sessions.delete(s.sid);
+  }
+
+  res.sendStatus(200);
+});
+
+/* ======================
    START
 ====================== */
 app.listen(PORT, async () => {
   await preloadAll();
-  console.log("✅ Gujarati AI Voice Agent v2 – Stable & Humanatic");
+  console.log("✅ Gujarati AI Voice Agent – SINGLE + BULK, FULLY STABLE");
 });
