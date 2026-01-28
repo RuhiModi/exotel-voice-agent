@@ -439,6 +439,11 @@ app.post("/listen", async (req, res) => {
   ====================== */
   
    if (s.state === STATES.INTRO && isBusyIntent(raw)) {
+      // ✅ Store busy sentence in user_text (since we return early)
+   const lastUser = s.userTexts[s.userTexts.length - 1];
+   if (raw && raw !== lastUser) {
+   s.userTexts.push(raw);
+   }
 
           // 🔑 LOG USER BEFORE EARLY RETURN
     s.conversationFlow.push(`User: ${raw}`);
