@@ -165,14 +165,27 @@ function detectTaskStatus(text) {
    BUSY INTENT
 ====================== */
 function isBusyIntent(text) {
-  return [
-    "સમય નથી",
+  if (!text) return false;
+
+  const busySignals = [
+    "સમય",
+    "નથી",
+    "પછી",
+    "બાદમાં",
+    "હવે નહીં",
     "હવે નથી",
-    "પછી ફોન",
-    "બાદમાં ફોન",
+    "પછી વાત",
     "later",
-    "call later"
-  ].some(p => text.includes(p));
+    "busy",
+    "not now"
+  ];
+
+  let score = 0;
+  for (const w of busySignals) {
+    if (text.includes(w)) score++;
+  }
+
+  return score >= 2; // 🔑 at least 2 signals = BUSY
 }
 
 /* ======================
@@ -376,67 +389,84 @@ app.post("/partial", (req, res) => {
 });
 
 /* ======================
-   LISTEN
+   LISTEN (FINAL, STABLE)
 ====================== */
 app.post("/listen", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
-   
+
   const raw = normalizeUserText(req.body.SpeechResult || "");
 
   s.liveBuffer = "";
   s.rawUserSpeech.push(raw);
-  //if (!raw || raw.length < 3) return;
+
+  /* ======================
+     🔑 PRIORITY 1: BUSY INTENT (ABSOLUTE)
+  ====================== */
+  if (s.state === STATES.INTRO && isBusyIntent(raw)) {
+    const next = STATES.CALLBACK_TIME;
+
+    s.state = next;          // 🔒 lock state
+    s.unclearCount = 0;
+    s.userBuffer = [];
+    s.agentTexts.push(RESPONSES[next].text);
+
+    return res.type("text/xml").send(
+      `<Response>
+        <Play>${BASE_URL}/audio/${next}.mp3</Play>
+        <Gather input="speech"
+          language="gu-IN"
+          timeout="15"
+          speechTimeout="auto"
+          partialResultCallback="${BASE_URL}/partial"
+          action="${BASE_URL}/listen"/>
+      </Response>`
+    );
+  }
+
+  /* ======================
+     🔑 PRIORITY 2: INVALID / VERY SHORT INPUT
+  ====================== */
   if (!raw || raw.length < 3) {
-  const next = RULES.nextOnUnclear(++s.unclearCount);
-  s.agentTexts.push(RESPONSES[next].text);
-
-  return res.type("text/xml").send(
-    `<Response>
-      <Play>${BASE_URL}/audio/${next}.mp3</Play>
-      <Gather input="speech"
-        language="gu-IN"
-        timeout="15"
-        speechTimeout="auto"
-        partialResultCallback="${BASE_URL}/partial"
-        action="${BASE_URL}/listen"/>
-    </Response>`
-  );
-}
-
-  
-
-  if (raw.split(" ").length < 3) {
     const next = RULES.nextOnUnclear(++s.unclearCount);
     s.agentTexts.push(RESPONSES[next].text);
 
-    return res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="15" speechTimeout="auto"
-    partialResultCallback="${BASE_URL}/partial"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
+    return res.type("text/xml").send(
+      `<Response>
+        <Play>${BASE_URL}/audio/${next}.mp3</Play>
+        <Gather input="speech"
+          language="gu-IN"
+          timeout="15"
+          speechTimeout="auto"
+          partialResultCallback="${BASE_URL}/partial"
+          action="${BASE_URL}/listen"/>
+      </Response>`
+    );
   }
 
- // if (hasGujarati(raw)) s.userBuffer.push(raw);
-// else s.userBuffer.push(raw);
+  /* ======================
+     NORMAL USER INPUT STORAGE
+  ====================== */
   s.userBuffer.push(raw);
 
-
+  /* ======================
+     STATE TRANSITION LOGIC
+  ====================== */
   let next;
+
   if (s.state === STATES.INTRO) {
-    next = isBusyIntent(raw) ? STATES.CALLBACK_TIME : STATES.TASK_CHECK;
+    next = STATES.TASK_CHECK;
+
   } else if (s.state === STATES.CALLBACK_TIME) {
     s.callbackTime = raw;
     next = STATES.CALLBACK_CONFIRM;
+
   } else if (s.state === STATES.TASK_PENDING) {
-    //s.userTexts.push(raw);
     next = STATES.PROBLEM_RECORDED;
+
   } else {
     const { status, confidence } = detectTaskStatus(raw);
     s.confidenceScore = confidence;
+
     next =
       status === "DONE"
         ? STATES.TASK_DONE
@@ -444,27 +474,25 @@ app.post("/listen", async (req, res) => {
         ? STATES.TASK_PENDING
         : RULES.nextOnUnclear(++s.unclearCount);
   }
-/* ======================
+
+  /* ======================
+     FINAL USER TEXT FLUSH (DEDUP SAFE)
+  ====================== */
   if (s.userBuffer.length) {
-    s.userTexts.push(s.userBuffer.join(" "));
+    const combined = s.userBuffer.join(" ");
+    const last = s.userTexts[s.userTexts.length - 1];
+
+    if (combined && combined !== last) {
+      s.userTexts.push(combined);
+    }
     s.userBuffer = [];
   }
-   
-====================== */ 
 
-  if (s.userBuffer.length) {
-  const combined = s.userBuffer.join(" ");
-  const last = s.userTexts[s.userTexts.length - 1];
-
-  if (combined && combined !== last) {
-    s.userTexts.push(combined);
-  }
-
-  s.userBuffer = [];
-}
- 
   s.agentTexts.push(RESPONSES[next].text);
 
+  /* ======================
+     END STATE
+  ====================== */
   if (RESPONSES[next].end) {
     s.result = next;
     s.endTime = Date.now();
@@ -483,25 +511,31 @@ app.post("/listen", async (req, res) => {
 
     sessions.delete(s.sid);
 
-    return res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Hangup/>
-</Response>
-`);
+    return res.type("text/xml").send(
+      `<Response>
+        <Play>${BASE_URL}/audio/${next}.mp3</Play>
+        <Hangup/>
+      </Response>`
+    );
   }
 
+  /* ======================
+     CONTINUE CONVERSATION
+  ====================== */
   s.state = next;
-  res.type("text/xml").send(`
-<Response>
-  <Play>${BASE_URL}/audio/${next}.mp3</Play>
-  <Gather input="speech" language="gu-IN"
-    timeout="15" speechTimeout="auto"
-    partialResultCallback="${BASE_URL}/partial"
-    action="${BASE_URL}/listen"/>
-</Response>
-`);
+  return res.type("text/xml").send(
+    `<Response>
+      <Play>${BASE_URL}/audio/${next}.mp3</Play>
+      <Gather input="speech"
+        language="gu-IN"
+        timeout="15"
+        speechTimeout="auto"
+        partialResultCallback="${BASE_URL}/partial"
+        action="${BASE_URL}/listen"/>
+    </Response>`
+  );
 });
+
 
 /* ======================
    CALL STATUS
