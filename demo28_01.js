@@ -281,6 +281,7 @@ app.post("/call", async (req, res) => {
     state: STATES.INTRO,
     agentTexts: [],
     userTexts: [],
+    hasLogged: false,
     userBuffer: [],
     rawUserSpeech: [],
     liveBuffer: "",
@@ -314,6 +315,7 @@ app.post("/bulk-call", async (req, res) => {
 
         sessions.set(call.sid, {
           sid: call.sid,
+          hasLogged: false, 
           userPhone: phone,
           batchId,
           startTime: Date.now(),
@@ -449,6 +451,7 @@ app.post("/listen", async (req, res) => {
     s.endTime = Date.now();
 
     await logToSheet(s);
+    s.hasLogged = true;
 
     if (s.batchId) {
       await updateBulkRowByPhone(
@@ -487,13 +490,24 @@ app.post("/listen", async (req, res) => {
 app.post("/call-status", async (req, res) => {
   const s = sessions.get(req.body.CallSid);
 
+  if (s && !s.hasLogged) {
+  s.result = s.result || "abandoned";
+  s.endTime = Date.now();
+  await logToSheet(s);
+  s.hasLogged = true;
+}
+
+   
+/* ======================   
   if (s) {
     if (!s.result) {
       s.result = "abandoned";
       s.endTime = Date.now();
       await logToSheet(s);
     }
+====================== */
 
+   
     if (s.batchId) {
       await updateBulkByCallSid(req.body.CallSid, "Completed");
     }
