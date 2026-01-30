@@ -17,7 +17,8 @@
     "@google-cloud/speech": "^6.6.0",
     "googleapis": "^144.0.0",
     "@google-cloud/text-to-speech": "^5.0.0",
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
+    "cors": "^2.8.5"
   }
 }
 
