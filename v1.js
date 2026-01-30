@@ -671,6 +671,38 @@ app.post("/start-campaign", async (req, res) => {
   }
 });
 
+/* ======================
+   PREVIEW BULK NUMBERS (UI)
+====================== */
+app.get("/preview-bulk", async (req, res) => {
+  try {
+    const sheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Bulk_Calls!A:C"
+    });
+
+    const rows = sheet.data.values || [];
+    const numbers = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][0]) {
+        numbers.push({
+          phone: rows[i][0],
+          status: rows[i][2] || "Pending"
+        });
+      }
+    }
+
+    res.json({
+      total: numbers.length,
+      preview: numbers.slice(0, 5)
+    });
+
+  } catch (e) {
+    res.status(500).json({ error: "Failed to load preview" });
+  }
+});
+
 
 /* ======================
    START
