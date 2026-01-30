@@ -7,6 +7,8 @@
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
+import cors from "cors";
+import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -17,9 +19,6 @@ import { google } from "googleapis";
 import { STATES } from "./conversation/states.js";
 import { RESPONSES } from "./conversation/responses.js";
 import { RULES } from "./conversation/rules.js";
-import fetch from "node-fetch";
-import cors from "cors";
-app.use(cors());
 
 
 dotenv.config();
@@ -28,6 +27,7 @@ dotenv.config();
    BASIC SETUP
 ====================== */
 const app = express();
+app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
