@@ -18,6 +18,9 @@ import { STATES } from "./conversation/states.js";
 import { RESPONSES } from "./conversation/responses.js";
 import { RULES } from "./conversation/rules.js";
 import fetch from "node-fetch";
+import cors from "cors";
+app.use(cors());
+
 
 dotenv.config();
 
