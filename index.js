@@ -1,2 +1,2 @@
-import "./v2.js";
+import "./v1.js";
 
